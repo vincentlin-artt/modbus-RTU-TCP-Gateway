@@ -121,8 +121,27 @@ static void send401(EthernetClient &c) {
   c.println();
   c.println(F("<h1>Please refresh to login</h1>"));
 }
+// Basic Auth has no real server-side session to invalidate — the browser
+// just caches credentials per realm. The standard workaround: answer with
+// a *different* realm string, which the browser treats as a separate
+// protection space and won't auto-fill from its cache, forcing a fresh
+// prompt (or the user can just close the tab).
+static void send401Logout(EthernetClient &c) {
+  c.println(F("HTTP/1.1 401 Unauthorized"));
+  c.println(F("WWW-Authenticate: Basic realm=\"Gateway-logout\""));
+  c.println(F("Connection: close"));
+  c.println(F("Content-Type: text/html; charset=utf-8"));
+  c.println();
+  c.println(F("<h1>Logged out — close this tab, or enter any credentials to log back in.</h1>"));
+}
 
-static void sendPageOpen(EthernetClient &c, const char *title) {
+static void navLink(EthernetClient &c, const char *href, const char *label, const char *activePath) {
+  c.print(F("<a href='")); c.print(href); c.print(F("'"));
+  if (strcmp(href, activePath) == 0) c.print(F(" class='active'"));
+  c.print(F(">")); c.print(label); c.print(F("</a>"));
+}
+
+static void sendPageOpen(EthernetClient &c, const char *title, const char *activePath) {
   c.print(F("<!doctype html><html><head><meta charset='utf-8'><title>"));
   c.print(title);
   c.println(F("</title>"));
@@ -134,6 +153,9 @@ static void sendPageOpen(EthernetClient &c, const char *title) {
     "nav{margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid #262a33}"
     "nav a{color:#93a2b5;text-decoration:none;margin-right:16px;font-size:14px}"
     "nav a:hover{color:#4da3ff}"
+    "nav a.active{color:#fff;font-weight:600;border-bottom:2px solid #4da3ff;padding-bottom:10px}"
+    "nav a.logout{float:right;margin-right:0;color:#e08a8a}"
+    "nav a.logout:hover{color:#ff6b6b}"
     "table{border-collapse:collapse;width:100%;font-size:13px}"
     "th,td{border:1px solid #262a33;padding:6px 8px;text-align:left}"
     "th{background:#1b1e24;color:#93a2b5;font-weight:600}"
@@ -148,8 +170,14 @@ static void sendPageOpen(EthernetClient &c, const char *title) {
     "p{color:#93a2b5;font-size:13px}"
     "</style></head><body>"));
   c.print(F("<h2>")); c.print(sysName); c.println(F("</h2>"));
-  c.println(F("<nav><a href='/'>Dashboard</a><a href='/points'>Points</a><a href='/network'>Network</a>"
-              "<a href='/serial'>Serial</a><a href='/system'>System</a><a href='/log'>Log</a></nav>"));
+  c.print(F("<nav>"));
+  navLink(c, "/",        "Dashboard", activePath);
+  navLink(c, "/points",  "Points",    activePath);
+  navLink(c, "/network", "Network",   activePath);
+  navLink(c, "/serial",  "Serial",    activePath);
+  navLink(c, "/system",  "System",    activePath);
+  navLink(c, "/log",     "Log",       activePath);
+  c.println(F("<a href='/logout' class='logout'>Logout</a></nav>"));
 }
 static void sendPageClose(EthernetClient &c) {
   c.println(F("</body></html>"));
@@ -160,7 +188,7 @@ static void sendPageClose(EthernetClient &c) {
 // ================================================================
 static void sendDashboard(EthernetClient &c) {
   sendHeader(c);
-  sendPageOpen(c, "Dashboard");
+  sendPageOpen(c, "Dashboard", "/");
   c.print(F("<p>IP: ")); c.print(Ethernet.localIP()); c.println(F("</p>"));
   c.print(F("<p>Uptime: ")); c.print(millis() / 1000); c.println(F(" s</p>"));
   c.print(F("<p>Modbus TCP clients active (last 15s): ")); c.print(mbTcpActiveClientCount()); c.println(F("</p>"));
@@ -186,7 +214,7 @@ static void sendDashboard(EthernetClient &c) {
 // ================================================================
 static void sendPointsPage(EthernetClient &c) {
   sendHeader(c);
-  sendPageOpen(c, "Points");
+  sendPageOpen(c, "Points", "/points");
   c.println(F("<form method='POST' action='/points'><div style='overflow-x:auto'><table>"
               "<tr><th>#</th><th>En</th><th>Name</th><th>SlaveID</th><th>RTU Addr (Modicon)</th>"
               "<th>Format</th><th>Byte Order</th><th>Scale</th><th>Rate(ms)</th><th>Wr</th>"
@@ -294,7 +322,7 @@ static void handlePointsPost(const String &body) {
 // ================================================================
 static void sendNetworkPage(EthernetClient &c) {
   sendHeader(c);
-  sendPageOpen(c, "Network");
+  sendPageOpen(c, "Network", "/network");
   c.println(F("<form method='POST' action='/network'>"));
   c.print(F("<label><input type=checkbox name='dhcp'")); if (netDhcp) c.print(F(" checked"));
   c.println(F("> DHCP</label><br><br>"));
@@ -325,7 +353,7 @@ static const uint32_t kBauds[] = {300, 600, 1200, 2400, 4800, 9600, 19200, 38400
 
 static void sendSerialPage(EthernetClient &c) {
   sendHeader(c);
-  sendPageOpen(c, "Serial (RS485)");
+  sendPageOpen(c, "Serial (RS485)", "/serial");
   c.println(F("<form method='POST' action='/serial'>"));
   c.print(F("Baud: <select name='baud'>"));
   for (int i = 0; i < 13; i++) printOption(c, i, String(kBauds[i]), S0.baudIndex);
@@ -370,7 +398,7 @@ static void handleSerialPost(const String &body) {
 // ================================================================
 static void sendSystemPage(EthernetClient &c) {
   sendHeader(c);
-  sendPageOpen(c, "System");
+  sendPageOpen(c, "System", "/system");
   c.println(F("<form method='POST' action='/system'>"));
   c.print(F("Device name: <input name='name' value='")); c.print(sysName); c.println(F("'><br>"));
   c.print(F("Login username: <input name='user' value='")); c.print(loginUsername); c.println(F("'><br>"));
@@ -398,10 +426,11 @@ static void handleSystemPost(const String &body) {
 // ================================================================
 static void sendLogPage(EthernetClient &c) {
   sendHeader(c);
-  sendPageOpen(c, "Log");
+  sendPageOpen(c, "Log", "/log");
+  c.print(F("<p>Most recent first — holds the last ")); c.print(MAX_LOGS); c.println(F(" entries.</p>"));
   c.println(F("<pre>"));
   int start = (logCount < MAX_LOGS) ? 0 : logIndex;
-  for (int k = 0; k < logCount; k++) {
+  for (int k = logCount - 1; k >= 0; k--) {
     int idx = (start + k) % MAX_LOGS;
     c.println(logs[idx]);
   }
@@ -452,6 +481,18 @@ void frontendLoop() {
     return;
   }
 
+  String path = "/";
+  int gp = h.indexOf(' ');
+  if (gp >= 0) {
+    int sp2 = h.indexOf(' ', gp + 1);
+    if (sp2 > gp) path = h.substring(gp + 1, sp2);
+  }
+
+  // /logout must answer 401 unconditionally — even with valid credentials —
+  // since that's the only way to make the browser drop its cached Basic
+  // Auth creds (see send401Logout() for why a different realm is used).
+  if (path == "/logout") { send401Logout(c); c.stop(); return; }
+
   bool auth = false;
   int ai = h.indexOf("Authorization: Basic ");
   if (ai >= 0) {
@@ -459,13 +500,6 @@ void frontendLoop() {
     if (a == loginAuthBase64) auth = true;
   }
   if (!auth) { send401(c); c.stop(); return; }
-
-  String path = "/";
-  int gp = h.indexOf(' ');
-  if (gp >= 0) {
-    int sp2 = h.indexOf(' ', gp + 1);
-    if (sp2 > gp) path = h.substring(gp + 1, sp2);
-  }
 
   if (isPost && path == "/points")       { handlePointsPost(body);  sendRedirect(c, "/points");  }
   else if (isPost && path == "/network") { handleNetworkPost(body); sendRedirect(c, "/network"); }

@@ -22,7 +22,7 @@
 #define BOARD_ABS     2     // Heartbeat LED on PF6 (VBAT domain)
 
 #ifndef BOARD_VARIANT
-  #define BOARD_VARIANT   BOARD_METAL     // <- switch BOARD_METAL / BOARD_ABS here
+  #define BOARD_VARIANT   2     // <- switch BOARD_METAL / BOARD_ABS here
 #endif
 
 #define POINTS_16  16
@@ -44,14 +44,27 @@
 
 // ================================================================
 //  Expands automatically from BOARD_VARIANT — no need to touch below
+//
+//  HAS_DISPLAY / HAS_DIO_MODULE are placeholders for parity with the
+//  reference project's board_config.h — this pure-Modbus build has no
+//  display/LCD/OLED or 2DI+2DO module code at all yet, so both are 0 on
+//  every variant right now. Wire them to real modules (and set METAL=1)
+//  if/when that code gets added here.
 // ================================================================
 #if BOARD_VARIANT == BOARD_METAL
-  #define HAS_PF6_LED         0     // heartbeat LED = SYS_LED GPIO pin
+  #define HAS_DISPLAY         0     // no display module in this build (placeholder)
+  #define HAS_DIO_MODULE      0     // no 2DI+2DO module in this build (placeholder)
+  #define HAS_BACKLOG_GPIO    1     // heartbeat LED on its own GPIO
+  #define LED_BACKLOG_PIN     SYS_LED
   #define BOARD_VARIANT_NAME  POINT_VARIANT_NAME "-MTL"
+  #define BOARD_FW_VERSION    "v1.0.0-MTL"
 
 #elif BOARD_VARIANT == BOARD_ABS
-  #define HAS_PF6_LED         1     // heartbeat LED = PF6 (boardLedSet(), board.cpp)
+  #define HAS_DISPLAY         0     // no display module in this build (placeholder)
+  #define HAS_DIO_MODULE      0     // no 2DI+2DO module in this build (placeholder)
+  #define HAS_BACKLOG_GPIO    0     // heartbeat LED via PF6 instead (boardLedSet(), board.cpp)
   #define BOARD_VARIANT_NAME  POINT_VARIANT_NAME "-ABS"
+  #define BOARD_FW_VERSION    "v1.0.2-ABS"
 
 #else
   #error "board_config.h: BOARD_VARIANT must be BOARD_METAL or BOARD_ABS"

@@ -24,21 +24,6 @@
 uint8_t g_mac[6];
 
 // ================================================================
-//  Heartbeat LED – 2 Hz blink (non-blocking). Routed to a normal GPIO
-//  or to PF6 depending on BOARD_VARIANT — see board.cpp/board_config.h.
-// ================================================================
-static void serviceSysLed() {
-  static unsigned long lastMs = 0;
-  static bool          ledOn  = false;
-  unsigned long now = millis();
-  if (now - lastMs >= SYS_LED_INTERVAL_MS) {
-    lastMs = now;
-    ledOn = !ledOn;
-    boardLedSet(ledOn);
-  }
-}
-
-// ================================================================
 //  Watchdog – init clock at boot, enable a few seconds later so SD/
 //  Ethernet bring-up (which can legitimately take a moment) can't
 //  trip a reset before the system is even up.
@@ -109,7 +94,8 @@ static void handleRstButton() {
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println(F("\n=== M467 TCP/RTU Modbus Gateway starting V0.1.10==="));
+  Serial.println(F("\n=== M467 TCP/RTU Modbus Gateway starting==="));
+  Serial.print(F("Board: ")); Serial.println(F(BOARD_FW_VERSION));   // confirms which flash actually landed
 
   pinMode(PIN_RST_BTN, INPUT_PULLUP);
   pinMode(PIN_RST_LED, OUTPUT);
@@ -156,7 +142,7 @@ void setup() {
 // ================================================================
 void loop() {
   handleRstButton();
-  serviceSysLed();
+  boardLedService();
   watchdogService();
 
   Ethernet.maintain();   // renew DHCP lease if needed

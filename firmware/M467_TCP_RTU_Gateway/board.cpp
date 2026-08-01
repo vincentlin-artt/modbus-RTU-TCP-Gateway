@@ -1,15 +1,16 @@
 // ================================================================
 //  board.cpp — heartbeat LED, routed per BOARD_VARIANT (board_config.h)
 //
-//  BOARD_METAL: normal GPIO (SYS_LED pin, config.h) via digitalWrite().
-//  BOARD_ABS  : PF6, a VBAT-domain pin only reachable through the
-//               RTC->GPIOCTL0 register (not a normal Arduino pin) —
-//               same register-level mechanism as the reference Gateway
-//               Manager project's PF6 backlog LED. Active low.
+//  HAS_BACKLOG_GPIO=1 (BOARD_METAL): normal GPIO (LED_BACKLOG_PIN) via
+//    digitalWrite().
+//  HAS_BACKLOG_GPIO=0 (BOARD_ABS)  : PF6, a VBAT-domain pin only reachable
+//    through the RTC->GPIOCTL0 register (not a normal Arduino pin) — same
+//    register-level mechanism as the reference Gateway Manager project's
+//    PF6 backlog LED. Active low.
 // ================================================================
 #include "board.h"
 
-#if HAS_PF6_LED
+#if !HAS_BACKLOG_GPIO
 
 static void pf6Init() {
   // IOCTLSEL = 1 lets the VBAT domain (PF4-PF11) drive GPIOCTL0/1 instead
@@ -29,18 +30,29 @@ static void pf6Set(bool on) {
 #endif
 
 void boardLedInit() {
-#if HAS_PF6_LED
+#if !HAS_BACKLOG_GPIO
   pf6Init();
 #else
-  pinMode(SYS_LED, OUTPUT);
-  digitalWrite(SYS_LED, LOW);
+  pinMode(LED_BACKLOG_PIN, OUTPUT);
+  digitalWrite(LED_BACKLOG_PIN, LOW);
 #endif
 }
 
 void boardLedSet(bool on) {
-#if HAS_PF6_LED
+#if !HAS_BACKLOG_GPIO
   pf6Set(on);
 #else
-  digitalWrite(SYS_LED, on ? HIGH : LOW);
+  digitalWrite(LED_BACKLOG_PIN, on ? HIGH : LOW);
 #endif
+}
+
+void boardLedService() {
+  static unsigned long lastMs = 0;
+  static bool          ledOn  = false;
+  unsigned long now = millis();
+  if (now - lastMs >= SYS_LED_INTERVAL_MS) {
+    lastMs = now;
+    ledOn = !ledOn;
+    boardLedSet(ledOn);
+  }
 }

@@ -8,6 +8,7 @@
 //  in kernel.cpp). Only the point model and scheduling around it differ.
 // ================================================================
 #include "modbus_rtu.h"
+#include "board.h"
 #include <math.h>
 
 // ================================================================
@@ -203,6 +204,9 @@ static bool rtuReadRaw(uint8_t slaveId, uint8_t func, uint16_t addr, uint16_t qt
     // whole responseTimeoutMs window — service any pending TCP client on
     // every spin of this wait so the two paths don't fight for the CPU.
     mbTcpServerLoop();
+    // Same reasoning for the heartbeat LED — without this it stalls for the
+    // whole wait and then jumps, which is what made the blink look unstable.
+    boardLedService();
   }
   g_lastFailLen = (uint8_t)rxLen;
 
@@ -260,6 +264,9 @@ static bool rtuWriteSingle(uint8_t slaveId, uint8_t writeFunc, uint16_t addr, ui
     // whole responseTimeoutMs window — service any pending TCP client on
     // every spin of this wait so the two paths don't fight for the CPU.
     mbTcpServerLoop();
+    // Same reasoning for the heartbeat LED — without this it stalls for the
+    // whole wait and then jumps, which is what made the blink look unstable.
+    boardLedService();
   }
   if (rxLen < 8) return false;
   uint16_t rxCrc = (uint16_t)rx[6] | ((uint16_t)rx[7] << 8);
@@ -300,6 +307,9 @@ static bool rtuWriteTwoRegs(uint8_t slaveId, uint16_t addr, uint16_t r0, uint16_
     // whole responseTimeoutMs window — service any pending TCP client on
     // every spin of this wait so the two paths don't fight for the CPU.
     mbTcpServerLoop();
+    // Same reasoning for the heartbeat LED — without this it stalls for the
+    // whole wait and then jumps, which is what made the blink look unstable.
+    boardLedService();
   }
   if (rxLen < 8) return false;
   uint16_t rxCrc = (uint16_t)rx[6] | ((uint16_t)rx[7] << 8);
