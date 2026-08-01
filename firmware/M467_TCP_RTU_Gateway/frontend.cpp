@@ -126,13 +126,30 @@ static void sendPageOpen(EthernetClient &c, const char *title) {
   c.print(F("<!doctype html><html><head><meta charset='utf-8'><title>"));
   c.print(title);
   c.println(F("</title>"));
-  c.println(F("<style>body{font-family:sans-serif;margin:16px;background:#f7f7f7;color:#222}"
-               "table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:4px 6px;font-size:13px}"
-               "th{background:#eee}input,select{width:90px}input[type=checkbox]{width:auto}"
-               "nav a{margin-right:12px}button{padding:6px 14px;margin-top:10px}</style></head><body>"));
+  // Minimal dark theme, inline CSS only — no external fonts/icons/JS, same
+  // low-footprint plain-HTML approach as before, just restyled.
+  c.println(F("<style>"
+    "body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;padding:16px;background:#14161a;color:#d8dbe0}"
+    "h2{margin:0 0 10px;font-size:19px;font-weight:600;color:#fff}"
+    "nav{margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid #262a33}"
+    "nav a{color:#93a2b5;text-decoration:none;margin-right:16px;font-size:14px}"
+    "nav a:hover{color:#4da3ff}"
+    "table{border-collapse:collapse;width:100%;font-size:13px}"
+    "th,td{border:1px solid #262a33;padding:6px 8px;text-align:left}"
+    "th{background:#1b1e24;color:#93a2b5;font-weight:600}"
+    "tr:nth-child(even) td{background:#181b21}"
+    "input,select{background:#1b1e24;color:#d8dbe0;border:1px solid #333844;border-radius:4px;padding:4px 6px;width:90px}"
+    "input[type=checkbox]{width:auto}"
+    "input:focus,select:focus{outline:none;border-color:#4da3ff}"
+    "button{background:#4da3ff;color:#0b0d10;border:none;border-radius:4px;padding:7px 16px;"
+    "font-weight:600;cursor:pointer;margin-top:10px}"
+    "button:hover{background:#6bb4ff}"
+    "a{color:#4da3ff}"
+    "p{color:#93a2b5;font-size:13px}"
+    "</style></head><body>"));
   c.print(F("<h2>")); c.print(sysName); c.println(F("</h2>"));
   c.println(F("<nav><a href='/'>Dashboard</a><a href='/points'>Points</a><a href='/network'>Network</a>"
-              "<a href='/serial'>Serial</a><a href='/system'>System</a><a href='/log'>Log</a></nav><hr>"));
+              "<a href='/serial'>Serial</a><a href='/system'>System</a><a href='/log'>Log</a></nav>"));
 }
 static void sendPageClose(EthernetClient &c) {
   c.println(F("</body></html>"));

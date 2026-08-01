@@ -15,6 +15,7 @@
 //    /POINTS.TXT   – all 16 points (RTU side + TCP side mapping)
 // ================================================================
 #include "config.h"
+#include "board.h"
 #include "modbus_rtu.h"
 #include "poll_engine.h"
 #include "modbus_tcp_server.h"
@@ -23,14 +24,17 @@
 uint8_t g_mac[6];
 
 // ================================================================
-//  System LED – 2 Hz heartbeat blink (non-blocking)
+//  Heartbeat LED – 2 Hz blink (non-blocking). Routed to a normal GPIO
+//  or to PF6 depending on BOARD_VARIANT — see board.cpp/board_config.h.
 // ================================================================
 static void serviceSysLed() {
   static unsigned long lastMs = 0;
+  static bool          ledOn  = false;
   unsigned long now = millis();
   if (now - lastMs >= SYS_LED_INTERVAL_MS) {
     lastMs = now;
-    digitalWrite(SYS_LED, !digitalRead(SYS_LED));
+    ledOn = !ledOn;
+    boardLedSet(ledOn);
   }
 }
 
@@ -110,8 +114,7 @@ void setup() {
   pinMode(PIN_RST_BTN, INPUT_PULLUP);
   pinMode(PIN_RST_LED, OUTPUT);
   digitalWrite(PIN_RST_LED, HIGH);
-  pinMode(SYS_LED, OUTPUT);
-  digitalWrite(SYS_LED, LOW);
+  boardLedInit();
 
   initMacAddress(g_mac);
   memcpy(g_macAddr, g_mac, 6);
