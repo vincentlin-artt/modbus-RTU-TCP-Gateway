@@ -22,6 +22,33 @@ Manager / `modbus-mqtt-gateway` firmware), reusing the same board, Arduino
 core, and RTU send/receive timing, but trimmed to a single purpose and
 re-architected around a Modbus **TCP server** instead of an MQTT client.
 
+## Board / point-count variants (`board_config.h`)
+
+Two independent compile-time switches, same pattern as the sibling Gateway
+Manager project's `board_config.h`:
+
+- **`BOARD_VARIANT`**: `BOARD_METAL` or `BOARD_ABS`. The only hardware
+  difference this firmware cares about is which pin drives the heartbeat
+  LED — METAL uses a normal GPIO (`SYS_LED`, pin 9), ABS drives **PF6**
+  instead via the VBAT-domain `RTC->GPIOCTL0` register (`board.cpp`) — the
+  same register-level mechanism the reference project uses for its PF6
+  backlog LED, just repurposed here since this build has no backlog concept.
+- **`POINT_VARIANT`**: `POINTS_16` or `POINTS_32`. Sets `MAX_POINTS`
+  everywhere (config storage, poll scheduler, TCP server lookups, web UI
+  table) — no other code changes needed to go from 16 to 32 points.
+
+Edit the two `#define`s at the top of `board_config.h` and reflash; all four
+combinations (METAL/ABS × 16/32) have been compile-checked.
+
+**Point count vs. scan time**: only one RTU transaction is ever in flight at
+a time (shared RS485 bus), so a full sweep of all points takes roughly
+`point_count × (single-transaction time + 20ms gap)`. Measured on this board
+against a PC-based RTU simulator, a successful transaction takes ~170-210ms,
+so a 16-point sweep is ~3-3.5s and a 32-point sweep ~6-7s if every read
+succeeds; real RTU field devices typically respond faster than a PC
+simulator, so expect better in practice. This bounds how low you can usefully
+set an individual point's polling rate when many points are enabled.
+
 ## Hardware / toolchain
 
 - Board: **NuMaker-M467SJ_SD** (`nuvoton:nuvoton:nuvoton_m467sd`), Arduino

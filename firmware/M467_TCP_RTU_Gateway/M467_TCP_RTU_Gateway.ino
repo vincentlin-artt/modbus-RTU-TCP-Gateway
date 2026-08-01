@@ -15,24 +15,13 @@
 //    /POINTS.TXT   – all 16 points (RTU side + TCP side mapping)
 // ================================================================
 #include "config.h"
+#include "board.h"
 #include "modbus_rtu.h"
 #include "poll_engine.h"
 #include "modbus_tcp_server.h"
 #include "frontend.h"
 
 uint8_t g_mac[6];
-
-// ================================================================
-//  System LED – 2 Hz heartbeat blink (non-blocking)
-// ================================================================
-static void serviceSysLed() {
-  static unsigned long lastMs = 0;
-  unsigned long now = millis();
-  if (now - lastMs >= SYS_LED_INTERVAL_MS) {
-    lastMs = now;
-    digitalWrite(SYS_LED, !digitalRead(SYS_LED));
-  }
-}
 
 // ================================================================
 //  Watchdog – init clock at boot, enable a few seconds later so SD/
@@ -105,13 +94,13 @@ static void handleRstButton() {
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println(F("\n=== M467 TCP/RTU Modbus Gateway starting V0.1.10==="));
+  Serial.println(F("\n=== M467 TCP/RTU Modbus Gateway starting==="));
+  Serial.print(F("Board: ")); Serial.println(F(BOARD_FW_VERSION));   // confirms which flash actually landed
 
   pinMode(PIN_RST_BTN, INPUT_PULLUP);
   pinMode(PIN_RST_LED, OUTPUT);
   digitalWrite(PIN_RST_LED, HIGH);
-  pinMode(SYS_LED, OUTPUT);
-  digitalWrite(SYS_LED, LOW);
+  boardLedInit();
 
   initMacAddress(g_mac);
   memcpy(g_macAddr, g_mac, 6);
@@ -153,7 +142,7 @@ void setup() {
 // ================================================================
 void loop() {
   handleRstButton();
-  serviceSysLed();
+  boardLedService();
   watchdogService();
 
   Ethernet.maintain();   // renew DHCP lease if needed

@@ -13,6 +13,7 @@
 #include <NVTSD.h>
 #include <ArduinoRS485.h>
 #include "NuMicro.h"
+#include "board_config.h"
 
 // ================================================================
 //  RST Button (Factory Reset) / System LED
@@ -35,7 +36,7 @@
 // ================================================================
 //  Tunables
 // ================================================================
-static const uint8_t       MAX_POINTS        = 16;    // fixed point count
+static const uint8_t       MAX_POINTS        = POINT_COUNT;   // from board_config.h (16 or 32)
 static const uint8_t       MAX_LOGS          = 30;
 
 // ================================================================
