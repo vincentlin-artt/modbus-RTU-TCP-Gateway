@@ -38,6 +38,11 @@
 // ================================================================
 static const uint8_t       MAX_POINTS        = POINT_COUNT;   // from board_config.h (16 or 32)
 static const uint8_t       MAX_LOGS          = 30;
+// If httpEnable is turned off, the web UI keeps working for this long after
+// boot regardless — otherwise disabling it (then rebooting, which any
+// System-page save triggers) would permanently lock you out with no way
+// back in short of a factory reset.
+static const unsigned long HTTP_GRACE_MS     = 60000UL;
 
 // ================================================================
 //  Enums
@@ -128,8 +133,18 @@ extern SerialConfig S0;
 // ================================================================
 extern String sysName, sysVersion;
 extern int    httpPort;
+extern bool   httpEnable;   // web UI on/off — see HTTP_GRACE_MS for the disable delay
 extern int    modbusTcpPort;
 extern String loginUsername, loginPassword, loginAuthBase64;
+
+// Modbus TCP role: false = Server (listen on modbusTcpPort, up to 32
+// concurrent clients); true = Client (dial out to mbTcpClientHost:Port and
+// service that single connection — Modbus-protocol roles don't change,
+// this device still answers requests, it just initiates the TCP socket
+// itself, e.g. for a SCADA master sitting behind a firewall/NAT).
+extern bool   mbTcpClientMode;
+extern String mbTcpClientHost;
+extern int    mbTcpClientPort;
 
 extern bool      netDhcp;
 extern IPAddress netIp, netMask, netGateway, netDns;

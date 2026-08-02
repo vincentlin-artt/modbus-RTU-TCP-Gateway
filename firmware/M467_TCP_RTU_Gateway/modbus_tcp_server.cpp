@@ -27,6 +27,14 @@
 
 static EthernetServer *mbServer = nullptr;
 
+// ---- dial-out ("Client") mode: single persistent outbound connection ----
+// Modbus-protocol roles don't change — this device still answers requests
+// via the exact same buildResponse() path as listen mode — only who opened
+// the TCP socket differs. See config.h's mbTcpClientMode.
+static EthernetClient g_outClient;
+static unsigned long  g_lastConnectAttemptMs = 0;
+#define MB_RECONNECT_INTERVAL_MS 10000UL
+
 // ---- best-effort "recently active" client tracking for the dashboard ----
 // EthernetServer doesn't expose a client count, so we fingerprint by
 // remote IP+port and age entries out after MB_TRACK_WINDOW_MS of silence.
@@ -53,6 +61,7 @@ static void trackClient(EthernetClient &c) {
 }
 
 uint16_t mbTcpActiveClientCount() {
+  if (mbTcpClientMode) return g_outClient.connected() ? 1 : 0;
   uint32_t now = millis();
   uint16_t n = 0;
   for (int i = 0; i < MB_TRACK_MAX; i++) {
@@ -62,9 +71,17 @@ uint16_t mbTcpActiveClientCount() {
 }
 
 void mbTcpServerInit() {
-  mbServer = new EthernetServer(modbusTcpPort);
-  mbServer->begin();
-  addLog("[MBTCP] server started on port " + String(modbusTcpPort));
+  if (mbTcpClientMode) {
+    // Bound how long a stalled/unreachable remote can block loop() for —
+    // default library timeout is 10s, which would freeze RTU polling and
+    // the web UI too since everything shares this one thread.
+    g_outClient.setConnectionTimeout(2000);
+    addLog("[MBTCP] client mode -> will dial " + mbTcpClientHost + ":" + String(mbTcpClientPort));
+  } else {
+    mbServer = new EthernetServer(modbusTcpPort);
+    mbServer->begin();
+    addLog("[MBTCP] server started on port " + String(modbusTcpPort));
+  }
 }
 
 // ================================================================
@@ -316,13 +333,13 @@ static void runPendingWriteIfReady() {
 }
 
 // ================================================================
-//  mbTcpServerLoop – services exactly one ready client per call
+//  serviceClient – reads one MBAP+PDU request off c (if any) and answers
+//  it. Shared by both listen mode (per accepted client) and dial-out mode
+//  (the single persistent outbound connection) — the Modbus-level handling
+//  is identical either way, only how "c" was obtained differs.
 // ================================================================
-void mbTcpServerLoop() {
-  runPendingWriteIfReady();
-
-  EthernetClient c = mbServer->available();
-  if (!c) return;
+static void serviceClient(EthernetClient &c) {
+  if (!c.available()) return;   // nothing pending on this connection right now
 
   trackClient(c);
 
@@ -380,4 +397,38 @@ void mbTcpServerLoop() {
   size_t  respLen = 0;
   buildResponse(unitId, pdu, pduLen, respPdu, respLen);
   sendMbapResponse(c, hdr[0], hdr[1], unitId, respPdu, respLen);
+}
+
+// ================================================================
+//  Dial-out (Client mode): keep one outbound connection alive, retrying
+//  on a fixed interval rather than every loop() iteration.
+// ================================================================
+static void serviceDialOut() {
+  if (!g_outClient.connected()) {
+    unsigned long now = millis();
+    if (g_lastConnectAttemptMs != 0 && now - g_lastConnectAttemptMs < MB_RECONNECT_INTERVAL_MS) return;
+    g_lastConnectAttemptMs = now;
+    g_outClient.stop();
+    addLog("[MBTCP] connecting to " + mbTcpClientHost + ":" + String(mbTcpClientPort) + " ...");
+    bool ok = g_outClient.connect(mbTcpClientHost.c_str(), (uint16_t)mbTcpClientPort);
+    addLog(ok ? "[MBTCP] connected" : "[MBTCP] connect failed, will retry");
+    return;
+  }
+  serviceClient(g_outClient);
+}
+
+// ================================================================
+//  mbTcpServerLoop – services exactly one ready client per call
+// ================================================================
+void mbTcpServerLoop() {
+  runPendingWriteIfReady();
+
+  if (mbTcpClientMode) {
+    serviceDialOut();
+    return;
+  }
+
+  EthernetClient c = mbServer->available();
+  if (!c) return;
+  serviceClient(c);
 }

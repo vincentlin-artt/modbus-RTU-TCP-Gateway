@@ -17,10 +17,15 @@ SerialConfig S0;
 String sysName    = "M467-Modbus-Gateway";
 String sysVersion = "1.0.0";
 int    httpPort      = 80;
+bool   httpEnable    = true;
 int    modbusTcpPort = 502;
 String loginUsername = "admin";
 String loginPassword = "admin";
 String loginAuthBase64;
+
+bool   mbTcpClientMode = false;
+String mbTcpClientHost = "";
+int    mbTcpClientPort = 502;
 
 bool      netDhcp = true;
 IPAddress netIp(192, 168, 1, 250);
@@ -161,10 +166,15 @@ void initDefaults() {
   sysName      = "M467-Modbus-Gateway";
   sysVersion   = "1.0.0";
   httpPort     = 80;
+  httpEnable   = true;
   modbusTcpPort = 502;
   loginUsername = "admin";
   loginPassword = "admin";
   loginAuthBase64 = base64Encode(loginUsername + ":" + loginPassword);
+
+  mbTcpClientMode = false;
+  mbTcpClientHost = "";
+  mbTcpClientPort = 502;
 
   netDhcp    = true;
   netIp      = IPAddress(192, 168, 1, 250);
@@ -200,7 +210,9 @@ void initDefaults() {
 
 // ================================================================
 //  /SYSTEM.TXT
-//  line1 name, line2 password, line3 httpPort, line4 modbusTcpPort
+//  line1 name, line2 password, line3 httpPort, line4 modbusTcpPort,
+//  line5 mbTcpClientMode(0/1), line6 mbTcpClientHost, line7 mbTcpClientPort,
+//  line8 httpEnable(0/1)
 // ================================================================
 void loadSysConfig() {
   File f = SD.open(FILE_SYSTEM, FILE_READ);
@@ -212,11 +224,16 @@ void loadSysConfig() {
   String pw = rdLn(f); if (pw.length() > 0) loginPassword = pw;
   String hp = rdLn(f); if (hp.length() > 0) httpPort = hp.toInt();
   String mp = rdLn(f); if (mp.length() > 0) modbusTcpPort = mp.toInt();
+  String cm = rdLn(f); if (cm.length() > 0) mbTcpClientMode = (cm.toInt() == 1);
+  String ch = rdLn(f); mbTcpClientHost = ch;   // may legitimately be empty
+  String cp = rdLn(f); if (cp.length() > 0) mbTcpClientPort = cp.toInt();
+  String he = rdLn(f); if (he.length() > 0) httpEnable = (he.toInt() == 1);
   f.close();
 
   if (sysName.length() == 0) sysName = "M467-Modbus-Gateway";
   if (httpPort == 0) httpPort = 80;
   if (modbusTcpPort == 0) modbusTcpPort = 502;
+  if (mbTcpClientPort == 0) mbTcpClientPort = 502;
   loginAuthBase64 = base64Encode(loginUsername + ":" + loginPassword);
 }
 
@@ -228,6 +245,10 @@ void saveSysConfig() {
   f.println(loginPassword);
   f.println(httpPort);
   f.println(modbusTcpPort);
+  f.println(mbTcpClientMode ? 1 : 0);
+  f.println(mbTcpClientHost);
+  f.println(mbTcpClientPort);
+  f.println(httpEnable ? 1 : 0);
   f.close();
   loginAuthBase64 = base64Encode(loginUsername + ":" + loginPassword);
 }

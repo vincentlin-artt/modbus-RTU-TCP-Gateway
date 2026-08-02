@@ -162,6 +162,7 @@ static void sendPageOpen(EthernetClient &c, const char *title, const char *activ
     "tr:nth-child(even) td{background:#181b21}"
     "input,select{background:#1b1e24;color:#d8dbe0;border:1px solid #333844;border-radius:4px;padding:4px 6px;width:90px}"
     "input[type=checkbox]{width:auto}"
+    "input[type=text],input[type=password]{width:200px}"
     "input:focus,select:focus{outline:none;border-color:#4da3ff}"
     "button{background:#4da3ff;color:#0b0d10;border:none;border-radius:4px;padding:7px 16px;"
     "font-weight:600;cursor:pointer;margin-top:10px}"
@@ -326,10 +327,22 @@ static void sendNetworkPage(EthernetClient &c) {
   c.println(F("<form method='POST' action='/network'>"));
   c.print(F("<label><input type=checkbox name='dhcp'")); if (netDhcp) c.print(F(" checked"));
   c.println(F("> DHCP</label><br><br>"));
-  c.print(F("Static IP: <input name='ip' value='")); c.print(netIp); c.println(F("'><br>"));
-  c.print(F("Mask: <input name='mask' value='")); c.print(netMask); c.println(F("'><br>"));
-  c.print(F("Gateway: <input name='gw' value='")); c.print(netGateway); c.println(F("'><br>"));
-  c.print(F("DNS: <input name='dns' value='")); c.print(netDns); c.println(F("'><br>"));
+  // While DHCP is on, netIp/netMask/etc are just the unused static fallback
+  // — show what the interface is *actually* running with instead, so this
+  // page reflects reality. These same fields double as the static config
+  // once DHCP is unchecked, so leave them editable either way.
+  if (netDhcp) {
+    c.println(F("<p>DHCP is on — showing the address currently assigned by the network below.</p>"));
+    c.print(F("Static IP: <input type=text name='ip' value='")); c.print(Ethernet.localIP()); c.println(F("'><br>"));
+    c.print(F("Mask: <input type=text name='mask' value='")); c.print(Ethernet.subnetMask()); c.println(F("'><br>"));
+    c.print(F("Gateway: <input type=text name='gw' value='")); c.print(Ethernet.gatewayIP()); c.println(F("'><br>"));
+    c.print(F("DNS: <input type=text name='dns' value='")); c.print(Ethernet.dnsServerIP()); c.println(F("'><br>"));
+  } else {
+    c.print(F("Static IP: <input type=text name='ip' value='")); c.print(netIp); c.println(F("'><br>"));
+    c.print(F("Mask: <input type=text name='mask' value='")); c.print(netMask); c.println(F("'><br>"));
+    c.print(F("Gateway: <input type=text name='gw' value='")); c.print(netGateway); c.println(F("'><br>"));
+    c.print(F("DNS: <input type=text name='dns' value='")); c.print(netDns); c.println(F("'><br>"));
+  }
   c.println(F("<button type=submit>Save &amp; Reboot</button></form>"));
   sendPageClose(c);
 }
@@ -400,21 +413,51 @@ static void sendSystemPage(EthernetClient &c) {
   sendHeader(c);
   sendPageOpen(c, "System", "/system");
   c.println(F("<form method='POST' action='/system'>"));
-  c.print(F("Device name: <input name='name' value='")); c.print(sysName); c.println(F("'><br>"));
-  c.print(F("Login username: <input name='user' value='")); c.print(loginUsername); c.println(F("'><br>"));
+  c.print(F("Device name: <input type=text maxlength=31 name='name' value='")); c.print(sysName); c.println(F("'><br>"));
+  c.print(F("Login username: <input type=text name='user' value='")); c.print(loginUsername); c.println(F("'><br>"));
   c.println(F("Login password: <input type=password name='pass' value=''><br>"));
   c.print(F("HTTP port: <input type=number name='http' value='")); c.print(httpPort); c.println(F("'><br>"));
-  c.print(F("Modbus TCP port: <input type=number name='mbport' value='")); c.print(modbusTcpPort); c.println(F("'><br>"));
+  c.print(F("<label><input type=checkbox name='httpen'")); if (httpEnable) c.print(F(" checked"));
+  c.println(F("> HTTP server enabled</label><br>"));
+  c.println(F("<p>Unchecking this doesn't take effect immediately — the web UI keeps working for "
+              "60s after every boot regardless, so a mistaken disable can still be undone before "
+              "it actually locks you out (short of a factory reset).</p>"));
+  c.print(F("Modbus TCP mode: <select name='mbmode' id='mbmode' style='width:280px' onchange='mbModeToggle()'>"));
+  printOption(c, 0, "Server (listen on port)", mbTcpClientMode ? 1 : 0);
+  printOption(c, 1, "Client (connect out to host:port)", mbTcpClientMode ? 1 : 0);
+  c.println(F("</select><br>"));
+
+  c.print(F("<div id='mbSrv' style='display:")); c.print(mbTcpClientMode ? "none" : "block"); c.println(F("'>"));
+  c.print(F("Modbus TCP port: <input type=number name='mbport' value='")); c.print(modbusTcpPort); c.println(F("'><br></div>"));
+
+  c.print(F("<div id='mbCli' style='display:")); c.print(mbTcpClientMode ? "block" : "none"); c.println(F("'>"));
+  c.print(F("Remote host: <input type=text name='mbhost' value='")); c.print(mbTcpClientHost); c.println(F("'><br>"));
+  c.print(F("Remote port: <input type=number name='mbrport' value='")); c.print(mbTcpClientPort); c.println(F("'><br></div>"));
+
+  c.println(F("<p>Server mode accepts many simultaneous connections (tested well beyond 4). "
+              "Client mode dials out to one remote host:port instead — the Modbus protocol "
+              "role doesn't change (this device still answers requests), only who opens the "
+              "TCP socket. Use Client mode when the remote SCADA/master can't connect to this "
+              "device directly (behind a firewall/NAT).</p>"));
   c.println(F("<button type=submit>Save &amp; Reboot</button></form>"));
+  c.println(F("<script>function mbModeToggle(){"
+              "var c=document.getElementById('mbmode').value=='1';"
+              "document.getElementById('mbSrv').style.display=c?'none':'block';"
+              "document.getElementById('mbCli').style.display=c?'block':'none';"
+              "}</script>"));
   sendPageClose(c);
 }
 static void handleSystemPost(const String &body) {
   String v;
-  v = formField(body, "name");   if (v.length()) sysName = v;
-  v = formField(body, "user");   if (v.length()) loginUsername = v;
-  v = formField(body, "pass");   if (v.length()) loginPassword = v;
-  v = formField(body, "http");   if (v.length()) httpPort = v.toInt();
-  v = formField(body, "mbport"); if (v.length()) modbusTcpPort = v.toInt();
+  v = formField(body, "name");    if (v.length()) sysName = v;
+  v = formField(body, "user");    if (v.length()) loginUsername = v;
+  v = formField(body, "pass");    if (v.length()) loginPassword = v;
+  v = formField(body, "http");    if (v.length()) httpPort = v.toInt();
+  httpEnable = formHasField(body, "httpen");
+  v = formField(body, "mbport");  if (v.length()) modbusTcpPort = v.toInt();
+  v = formField(body, "mbmode");  if (v.length()) mbTcpClientMode = (v.toInt() == 1);
+  v = formField(body, "mbhost");  mbTcpClientHost = v;   // may legitimately be cleared
+  v = formField(body, "mbrport"); if (v.length()) mbTcpClientPort = v.toInt();
   saveSysConfig();
   addLog("[WEB] system updated, rebooting");
   g_rebootPending = true;
@@ -442,6 +485,16 @@ static void sendLogPage(EthernetClient &c) {
 //  frontendLoop – services exactly one ready client per call
 // ================================================================
 void frontendLoop() {
+  // Disabling the web UI never takes effect immediately — see HTTP_GRACE_MS.
+  // Any System-page save reboots the device (resetting millis() to 0), so
+  // in practice you always get a fresh 60s window after the reboot that
+  // applied the change to undo a mistaken disable before it actually bites.
+  if (!httpEnable && millis() > HTTP_GRACE_MS) {
+    EthernetClient dead = webServer->available();
+    if (dead) dead.stop();
+    return;
+  }
+
   EthernetClient c = webServer->available();
   if (!c) return;
 

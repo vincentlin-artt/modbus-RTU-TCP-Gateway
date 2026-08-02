@@ -12,10 +12,21 @@ speaks Modbus:
   clients can poll concurrently without blocking each other or the bus.
   Tested to comfortably exceed 4 simultaneous TCP connections (the underlying
   lwIP stack on this board supports up to 32).
+- Alternatively, **Modbus TCP Client mode** (System page): instead of
+  listening, the device dials out to one remote host:port and services that
+  single connection. The Modbus-protocol roles don't change — this device
+  still answers requests — only which side opened the TCP socket differs.
+  Useful when the SCADA/master can't connect to this device directly (behind
+  a firewall/NAT). Reconnects automatically (every 10s) if the link drops.
 - Writes from a TCP client (FC05/06/16) are forwarded live to the RS485 bus
   and update the cache on success.
 - Built-in web UI (default port 80) for configuring everything — network,
   RS485 serial settings, and all 16 points — backed by SD-card config files.
+  Can be disabled (System page) if you don't want it running in production;
+  disabling never takes effect immediately (see `HTTP_GRACE_MS` in
+  `config.h`) — the UI stays reachable for 60s after every boot regardless,
+  so a mistaken disable can still be undone rather than permanently locking
+  you out short of a factory reset.
 
 This is a companion/sibling project to `../M467-Manager` (the Gateway
 Manager / `modbus-mqtt-gateway` firmware), reusing the same board, Arduino
@@ -109,7 +120,7 @@ button 10s) to fall back to defaults.
 
 | File           | Contents |
 |----------------|----------|
-| `/SYSTEM.TXT`  | device name, login password, HTTP port, Modbus TCP port |
+| `/SYSTEM.TXT`  | device name, login password, HTTP port, Modbus TCP port, TCP client mode + remote host/port, HTTP enable |
 | `/NETWORK.TXT` | DHCP flag, static IP, mask, gateway, DNS |
 | `/SERIAL.TXT`  | RS485 baud index, data bits, parity, stop bits, pre/post delay (µs), response timeout (ms) |
 | `/POINTS.TXT`  | one line per point (see `config.cpp` for the exact CSV layout) |
