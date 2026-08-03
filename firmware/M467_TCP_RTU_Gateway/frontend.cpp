@@ -192,21 +192,33 @@ static void sendDashboard(EthernetClient &c) {
   sendPageOpen(c, "Dashboard", "/");
   c.print(F("<p>IP: ")); c.print(Ethernet.localIP()); c.println(F("</p>"));
   c.print(F("<p>Uptime: ")); c.print(millis() / 1000); c.println(F(" s</p>"));
-  c.print(F("<p>Modbus TCP clients active (last 15s): ")); c.print(mbTcpActiveClientCount()); c.println(F("</p>"));
-  c.println(F("<table><tr><th>#</th><th>Name</th><th>Value</th><th>Raw</th><th>Status</th><th>Fail</th><th>Age(s)</th></tr>"));
-  for (uint8_t i = 0; i < MAX_POINTS; i++) {
-    if (!points[i].enable) continue;
-    PointRuntime &rt = pointState[i];
-    c.print(F("<tr><td>")); c.print(i + 1); c.print(F("</td><td>")); c.print(points[i].name);
-    c.print(F("</td><td>")); c.print(rt.value, 3); c.print(F("</td><td>"));
-    c.print(rt.rawRegs[0]);
-    if (formatRegCount(points[i].format) == 2) { c.print(','); c.print(rt.rawRegs[1]); }
-    c.print(F("</td><td>")); c.print(rt.valid ? F("OK") : F("-")); c.print(F("</td><td>"));
-    c.print(rt.failCount); c.print(F("</td><td>"));
-    c.print(rt.valid ? (unsigned long)((millis() - rt.lastPollMs) / 1000) : 0);
-    c.println(F("</td></tr>"));
+
+  if (gatewayMode == GW_CONCENTRATOR) {
+    c.print(F("<p>Gateway mode: Concentrator</p>"));
+    c.print(F("<p>Modbus TCP clients active (last 15s): ")); c.print(mbTcpActiveClientCount()); c.println(F("</p>"));
+    c.println(F("<table><tr><th>#</th><th>Name</th><th>Value</th><th>Raw</th><th>Status</th><th>Fail</th><th>Age(s)</th></tr>"));
+    for (uint8_t i = 0; i < MAX_POINTS; i++) {
+      if (!points[i].enable) continue;
+      PointRuntime &rt = pointState[i];
+      c.print(F("<tr><td>")); c.print(i + 1); c.print(F("</td><td>")); c.print(points[i].name);
+      c.print(F("</td><td>")); c.print(rt.value, 3); c.print(F("</td><td>"));
+      c.print(rt.rawRegs[0]);
+      if (formatRegCount(points[i].format) == 2) { c.print(','); c.print(rt.rawRegs[1]); }
+      c.print(F("</td><td>")); c.print(rt.valid ? F("OK") : F("-")); c.print(F("</td><td>"));
+      c.print(rt.failCount); c.print(F("</td><td>"));
+      c.print(rt.valid ? (unsigned long)((millis() - rt.lastPollMs) / 1000) : 0);
+      c.println(F("</td></tr>"));
+    }
+    c.println(F("</table>"));
+  } else {
+    c.print(F("<p>Gateway mode: Converter ("));
+    c.print(converterMode == CONV_TRANSPARENT ? F("transparent") : F("standard tcp&lt;&gt;rtu"));
+    c.println(F(")</p>"));
+    c.print(F("<p>Converter TCP clients connected: ")); c.print(mbConverterActiveClientCount()); c.println(F("</p>"));
+    c.println(F("<p>Points are not used in Converter mode — every TCP request is forwarded to the "
+                "RTU device live, no cache, no capacity limit. Switch back to Concentrator mode on "
+                "the System page to use the points table.</p>"));
   }
-  c.println(F("</table>"));
   sendPageClose(c);
 }
 
@@ -216,6 +228,11 @@ static void sendDashboard(EthernetClient &c) {
 static void sendPointsPage(EthernetClient &c) {
   sendHeader(c);
   sendPageOpen(c, "Points", "/points");
+  if (gatewayMode != GW_CONCENTRATOR) {
+    c.println(F("<p>Gateway mode is currently Converter — points below are saved but not polled or "
+                "exposed on the Modbus TCP server. Switch to Concentrator mode on the System page to "
+                "use them.</p>"));
+  }
   c.println(F("<form method='POST' action='/points'><div style='overflow-x:auto'><table>"
               "<tr><th>#</th><th>En</th><th>Name</th><th>SlaveID</th><th>RTU Addr (Modicon)</th>"
               "<th>Format</th><th>Byte Order</th><th>Scale</th><th>Rate(ms)</th><th>Wr</th>"
@@ -422,6 +439,34 @@ static void sendSystemPage(EthernetClient &c) {
   c.println(F("<p>Unchecking this doesn't take effect immediately — the web UI keeps working for "
               "60s after every boot regardless, so a mistaken disable can still be undone before "
               "it actually locks you out (short of a factory reset).</p>"));
+  c.print(F("Gateway mode: <select name='gwmode' id='gwmode' style='width:280px' onchange='gwModeToggle()'>"));
+  printOption(c, GW_CONCENTRATOR, "Concentrator (points, polling cache)", gatewayMode);
+  printOption(c, GW_CONVERTER,    "Converter (live TCP&lt;-&gt;RTU pass-through)", gatewayMode);
+  c.println(F("</select><br>"));
+  c.println(F("<p>Mutually exclusive — only one mode's TCP listener runs at a time, both share "
+              "the same RS485 bus. Changing this reboots the device.</p>"));
+
+  // Only meaningful (and only shown) when Gateway mode above is Converter —
+  // see gwModeToggle() below.
+  c.print(F("<div id='gwConvBlock'>"));
+  c.print(F("Converter sub-mode: <select name='convmode' style='width:280px'>"));
+  printOption(c, CONV_STANDARD,    "standard (Modbus TCP&lt;-&gt;RTU conversion)", converterMode);
+  printOption(c, CONV_TRANSPARENT, "transparent (raw byte tunnel)", converterMode);
+  c.println(F("</select><br>"));
+  c.print(F("Modbus TCP port: <input type=number name='mbportc' value='")); c.print(modbusTcpPort); c.println(F("'><br>"));
+  c.println(F("<p>Up to ")); c.print(MAX_TRACKED_CLIENTS);
+  c.println(F(" simultaneous TCP connections, serviced in round-robin order — every request needs a "
+              "live RS485 transaction, so fairness here means fairness for turns at the shared bus, "
+              "not just CPU time. Standard sub-mode parses real Modbus TCP (MBAP) and we add/verify "
+              "the RTU CRC ourselves. Transparent sub-mode is a raw tunnel — whatever bytes the client "
+              "sends ARE the RTU frame content (client computes its own CRC); frame boundaries on both "
+              "the TCP and RTU sides are detected the same way, via the standard Modbus RTU silent-"
+              "interval rule, since a transparent client is expected to pace its bytes as if writing "
+              "straight onto the RTU wire.</p>"));
+  c.println(F("</div>"));
+
+  // Only meaningful (and only shown) when Gateway mode above is Concentrator.
+  c.print(F("<div id='gwConcBlock'>"));
   c.print(F("Modbus TCP mode: <select name='mbmode' id='mbmode' style='width:280px' onchange='mbModeToggle()'>"));
   printOption(c, 0, "Server (listen on port)", mbTcpClientMode ? 1 : 0);
   printOption(c, 1, "Client (connect out to host:port)", mbTcpClientMode ? 1 : 0);
@@ -434,30 +479,48 @@ static void sendSystemPage(EthernetClient &c) {
   c.print(F("Remote host: <input type=text name='mbhost' value='")); c.print(mbTcpClientHost); c.println(F("'><br>"));
   c.print(F("Remote port: <input type=number name='mbrport' value='")); c.print(mbTcpClientPort); c.println(F("'><br></div>"));
 
-  c.println(F("<p>Server mode accepts many simultaneous connections (tested well beyond 4). "
-              "Client mode dials out to one remote host:port instead — the Modbus protocol "
-              "role doesn't change (this device still answers requests), only who opens the "
-              "TCP socket. Use Client mode when the remote SCADA/master can't connect to this "
-              "device directly (behind a firewall/NAT).</p>"));
+  c.println(F("<p>Server mode accepts many simultaneous connections (tested well beyond 4), serviced "
+              "in round-robin order so one busy client can't starve the others. Client mode dials out "
+              "to one remote host:port instead — the Modbus protocol role doesn't change (this device "
+              "still answers requests), only who opens the TCP socket. Use Client mode when the remote "
+              "SCADA/master can't connect to this device directly (behind a firewall/NAT).</p>"));
+  c.println(F("</div>"));
+
   c.println(F("<button type=submit>Save &amp; Reboot</button></form>"));
-  c.println(F("<script>function mbModeToggle(){"
-              "var c=document.getElementById('mbmode').value=='1';"
-              "document.getElementById('mbSrv').style.display=c?'none':'block';"
-              "document.getElementById('mbCli').style.display=c?'block':'none';"
-              "}</script>"));
+  // NOTE: this whole script must be emitted with print() calls only — a
+  // println() anywhere inside it inserts a literal CRLF into the source,
+  // which (if it lands mid-statement) breaks the JS parse and silently
+  // kills every handler in the block, including mbModeToggle() below.
+  c.print(F("<script>function mbModeToggle(){"
+            "var c=document.getElementById('mbmode').value=='1';"
+            "document.getElementById('mbSrv').style.display=c?'none':'block';"
+            "document.getElementById('mbCli').style.display=c?'block':'none';"
+            "}"
+            "function gwModeToggle(){"
+            "var conv=document.getElementById('gwmode').value=='1';"
+            "document.getElementById('gwConcBlock').style.display=conv?'none':'block';"
+            "document.getElementById('gwConvBlock').style.display=conv?'block':'none';"
+            "}"
+              "gwModeToggle();</script>"));
   sendPageClose(c);
 }
 static void handleSystemPost(const String &body) {
   String v;
-  v = formField(body, "name");    if (v.length()) sysName = v;
-  v = formField(body, "user");    if (v.length()) loginUsername = v;
-  v = formField(body, "pass");    if (v.length()) loginPassword = v;
-  v = formField(body, "http");    if (v.length()) httpPort = v.toInt();
+  v = formField(body, "name");     if (v.length()) sysName = v;
+  v = formField(body, "user");     if (v.length()) loginUsername = v;
+  v = formField(body, "pass");     if (v.length()) loginPassword = v;
+  v = formField(body, "http");     if (v.length()) httpPort = v.toInt();
   httpEnable = formHasField(body, "httpen");
-  v = formField(body, "mbport");  if (v.length()) modbusTcpPort = v.toInt();
-  v = formField(body, "mbmode");  if (v.length()) mbTcpClientMode = (v.toInt() == 1);
-  v = formField(body, "mbhost");  mbTcpClientHost = v;   // may legitimately be cleared
-  v = formField(body, "mbrport"); if (v.length()) mbTcpClientPort = v.toInt();
+  v = formField(body, "gwmode");   if (v.length()) gatewayMode = (uint8_t)v.toInt();
+  // Two separate port fields (one per gwConvBlock/gwConcBlock — see
+  // sendSystemPage()) so each can sit right after its own mode selector;
+  // only the one belonging to the mode just submitted is authoritative.
+  v = formField(body, gatewayMode == GW_CONVERTER ? "mbportc" : "mbport");
+  if (v.length()) modbusTcpPort = v.toInt();
+  v = formField(body, "mbmode");   if (v.length()) mbTcpClientMode = (v.toInt() == 1);
+  v = formField(body, "mbhost");   mbTcpClientHost = v;   // may legitimately be cleared
+  v = formField(body, "mbrport");  if (v.length()) mbTcpClientPort = v.toInt();
+  v = formField(body, "convmode"); if (v.length()) converterMode = (uint8_t)v.toInt();
   saveSysConfig();
   addLog("[WEB] system updated, rebooting");
   g_rebootPending = true;

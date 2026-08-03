@@ -13,6 +13,7 @@ static const unsigned long MIN_SCAN_GAP_MS = 20;
 static unsigned long lastScanMs = 0;
 
 void pollEngineInit() {
+  if (gatewayMode != GW_CONCENTRATOR) return;
   unsigned long now = millis();
   for (uint8_t i = 0; i < MAX_POINTS; i++) {
     // Stagger initial due-times so an all-enabled config doesn't burst
@@ -23,6 +24,7 @@ void pollEngineInit() {
 }
 
 void pollEngineLoop() {
+  if (gatewayMode != GW_CONCENTRATOR) return;
   unsigned long now = millis();
   if (now - lastScanMs < MIN_SCAN_GAP_MS) return;
 

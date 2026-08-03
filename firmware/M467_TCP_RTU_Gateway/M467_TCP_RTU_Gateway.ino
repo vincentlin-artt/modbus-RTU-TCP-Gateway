@@ -19,6 +19,7 @@
 #include "modbus_rtu.h"
 #include "poll_engine.h"
 #include "modbus_tcp_server.h"
+#include "modbus_converter.h"
 #include "frontend.h"
 
 uint8_t g_mac[6];
@@ -129,7 +130,10 @@ void setup() {
   }
   Serial.println(Ethernet.localIP());
 
+  // gatewayMode is mutually exclusive — both Init functions self-guard on
+  // it, so exactly one of them actually does anything here.
   mbTcpServerInit();
+  mbConverterInit();
   frontendInit();
   watchdogInit();
 
@@ -148,8 +152,11 @@ void loop() {
   Ethernet.maintain();   // renew DHCP lease if needed
 
   frontendLoop();
+  // gatewayMode is mutually exclusive — both Loop functions self-guard on
+  // it, so only the active mode's actually does anything each call.
   mbTcpServerLoop();
   pollEngineLoop();
+  mbConverterLoop();
 
   if (g_rebootPending && millis() > g_rebootAt) {
     Serial.println(F("[SYS] Rebooting..."));
