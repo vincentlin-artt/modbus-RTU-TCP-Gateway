@@ -64,7 +64,7 @@
   #define HAS_DIO_MODULE      0     // no 2DI+2DO module in this build (placeholder)
   #define HAS_BACKLOG_GPIO    0     // heartbeat LED via PF6 instead (boardLedSet(), board.cpp)
   #define BOARD_VARIANT_NAME  POINT_VARIANT_NAME "-ABS"
-  #define BOARD_FW_VERSION    "v1.0.4-ABS"
+  #define BOARD_FW_VERSION    "v1.0.7-ABS"
 
 #else
   #error "board_config.h: BOARD_VARIANT must be BOARD_METAL or BOARD_ABS"

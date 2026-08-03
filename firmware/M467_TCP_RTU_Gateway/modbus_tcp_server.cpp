@@ -70,7 +70,47 @@ uint16_t mbTcpActiveClientCount() {
   return n;
 }
 
+// ================================================================
+//  Round-robin dispatch fairness
+//
+//  EthernetServer::available() always scans its internal client array from
+//  index 0 and returns the first client with pending data — under
+//  sustained traffic from a low-indexed client (e.g. one client pipelining
+//  many requests back-to-back) that client wins every single call, and
+//  available() never gets the chance to even report anyone else is ready.
+//  A client with one lone pending request could wait indefinitely.
+//
+//  Fix: track distinct clients ourselves by IP+port and dispatch one
+//  service turn per mbTcpServerLoop() call in strict round-robin order over
+//  our own list (A1 -> B1 -> C1 -> A2 -> B2 -> ...), instead of trusting
+//  the library's scan order. available() is only used below for discovering
+//  new connections, never for deciding who gets serviced.
+// ================================================================
+struct RrSlot { bool used; EthernetClient client; uint32_t ip; uint16_t port; };
+static RrSlot  g_rr[MAX_TRACKED_CLIENTS];
+static uint8_t g_rrNext = 0;
+
+static void rrTrack(EthernetClient &c) {
+  uint32_t ip = (uint32_t)c.remoteIP();
+  uint16_t port = c.remotePort();
+  for (uint8_t i = 0; i < MAX_TRACKED_CLIENTS; i++) {
+    if (g_rr[i].used && g_rr[i].ip == ip && g_rr[i].port == port) return;   // already tracked
+  }
+  for (uint8_t i = 0; i < MAX_TRACKED_CLIENTS; i++) {
+    if (!g_rr[i].used) { g_rr[i] = { true, c, ip, port }; return; }
+  }
+  // Tracked table full (more simultaneous clients than MAX_TRACKED_CLIENTS):
+  // this one just won't get a round-robin turn until a tracked slot frees up.
+}
+
+static void rrPrune() {
+  for (uint8_t i = 0; i < MAX_TRACKED_CLIENTS; i++) {
+    if (g_rr[i].used && !g_rr[i].client.connected()) g_rr[i] = RrSlot();
+  }
+}
+
 void mbTcpServerInit() {
+  if (gatewayMode != GW_CONCENTRATOR) return;
   if (mbTcpClientMode) {
     // Bound how long a stalled/unreachable remote can block loop() for —
     // default library timeout is 10s, which would freeze RTU polling and
@@ -302,9 +342,11 @@ static void sendMbapResponse(EthernetClient &c, uint8_t transIdHi, uint8_t trans
 //  Write requests (FC05/06/16) that land while an RTU read is already in
 //  flight can't be serviced on the spot — see mbRtuIsBusy(). Rather than
 //  instantly failing them (which is what a plain g_rtuBusy check on the
-//  RTU side does), hold the single most recent one here and run it the
-//  moment the bus frees up, instead of making the TCP client eat a bogus
-//  "device failure" for a request we never even attempted.
+//  RTU side does), hold up to MAX_PENDING_WRITES of them in a FIFO ring and
+//  run each in arrival order as soon as the bus frees up, instead of making
+//  the TCP client eat a bogus "device failure" for a request we never even
+//  attempted. A single slot would let one collision block every other
+//  client's queued write until it was individually rejected.
 // ================================================================
 struct PendingWrite {
   bool          active = false;
@@ -313,13 +355,33 @@ struct PendingWrite {
   uint8_t       pdu[252];
   size_t        pduLen;
 };
-static PendingWrite g_pendingWrite;
+static PendingWrite g_pendingWrites[MAX_PENDING_WRITES];
+static uint8_t       g_pwHead  = 0;   // next slot to dequeue
+static uint8_t       g_pwCount = 0;   // number of queued writes waiting
+
+static bool pendingWriteEnqueue(EthernetClient &c, uint8_t transIdHi, uint8_t transIdLo,
+                                 uint8_t unitId, const uint8_t *pdu, size_t pduLen) {
+  if (g_pwCount >= MAX_PENDING_WRITES) return false;
+  uint8_t tail = (uint8_t)((g_pwHead + g_pwCount) % MAX_PENDING_WRITES);
+  PendingWrite &pw = g_pendingWrites[tail];
+  pw.active    = true;
+  pw.client    = c;
+  pw.transIdHi = transIdHi;
+  pw.transIdLo = transIdLo;
+  pw.unitId    = unitId;
+  memcpy(pw.pdu, pdu, pduLen);
+  pw.pduLen = pduLen;
+  g_pwCount++;
+  return true;
+}
 
 static void runPendingWriteIfReady() {
-  if (!g_pendingWrite.active || mbRtuIsBusy()) return;
+  if (g_pwCount == 0 || mbRtuIsBusy()) return;
 
-  PendingWrite pw = g_pendingWrite;   // copy out, then clear, before we (re)enter RTU code
-  g_pendingWrite.active = false;
+  PendingWrite pw = g_pendingWrites[g_pwHead];   // copy out, then dequeue, before re-entering RTU code
+  g_pendingWrites[g_pwHead].active = false;
+  g_pwHead  = (uint8_t)((g_pwHead + 1) % MAX_PENDING_WRITES);
+  g_pwCount--;
 
   if (!pw.client.connected()) {
     addLog("[TCPWR] queued write dropped — client disconnected before bus freed up");
@@ -372,23 +434,15 @@ static void serviceClient(EthernetClient &c) {
   bool isWriteFunc = (func == 0x05 || func == 0x06 || func == 0x10);
 
   if (isWriteFunc && mbRtuIsBusy()) {
-    if (g_pendingWrite.active) {
-      // Already holding one queued write — a second collision is rare
-      // enough (RS485 transactions run ~200ms-2s) that failing it outright
-      // is fine rather than adding a second queue slot.
+    if (!pendingWriteEnqueue(c, hdr[0], hdr[1], unitId, pdu, pduLen)) {
+      // Queue is full (MAX_PENDING_WRITES already waiting) — rare enough
+      // that failing this one outright is fine rather than growing it further.
       uint8_t respPdu[2]; size_t respLen;
       buildException(func, MB_EXC_SERVER_FAILURE, respPdu, respLen);
       sendMbapResponse(c, hdr[0], hdr[1], unitId, respPdu, respLen);
-      addLog("[TCPWR] write rejected — a write was already queued waiting for the bus");
+      addLog("[TCPWR] write rejected — pending-write queue full (" + String(MAX_PENDING_WRITES) + ")");
       return;
     }
-    g_pendingWrite.active    = true;
-    g_pendingWrite.client    = c;
-    g_pendingWrite.transIdHi = hdr[0];
-    g_pendingWrite.transIdLo = hdr[1];
-    g_pendingWrite.unitId    = unitId;
-    memcpy(g_pendingWrite.pdu, pdu, pduLen);
-    g_pendingWrite.pduLen    = pduLen;
     addLog("[TCPWR] write queued — bus busy with a read, will run as soon as it's free");
     return;   // no response yet; runPendingWriteIfReady() sends it once the bus frees up
   }
@@ -418,9 +472,15 @@ static void serviceDialOut() {
 }
 
 // ================================================================
-//  mbTcpServerLoop – services exactly one ready client per call
+//  mbTcpServerLoop – services exactly one ready client per call, chosen by
+//  our own round-robin order (see rrTrack/rrPrune above), not by
+//  EthernetServer::available()'s scan-from-0 order. Self-guards on
+//  gatewayMode so it's safe to call unconditionally from anywhere (e.g. the
+//  RTU wait loops) regardless of which gateway mode is actually active.
 // ================================================================
 void mbTcpServerLoop() {
+  if (gatewayMode != GW_CONCENTRATOR) return;
+
   runPendingWriteIfReady();
 
   if (mbTcpClientMode) {
@@ -428,7 +488,18 @@ void mbTcpServerLoop() {
     return;
   }
 
-  EthernetClient c = mbServer->available();
-  if (!c) return;
-  serviceClient(c);
+  // available() is used purely for discovering connections here — whichever
+  // client it hands back gets added to our tracked list if it's new.
+  // Servicing below always goes through our own round-robin order.
+  EthernetClient discovered = mbServer->available();
+  if (discovered) rrTrack(discovered);
+  rrPrune();
+
+  for (uint8_t step = 0; step < MAX_TRACKED_CLIENTS; step++) {
+    uint8_t i = (uint8_t)((g_rrNext + step) % MAX_TRACKED_CLIENTS);
+    if (!g_rr[i].used || !g_rr[i].client.connected() || !g_rr[i].client.available()) continue;
+    serviceClient(g_rr[i].client);
+    g_rrNext = (uint8_t)((i + 1) % MAX_TRACKED_CLIENTS);
+    return;
+  }
 }

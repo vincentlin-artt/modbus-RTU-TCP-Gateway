@@ -34,13 +34,31 @@
 //  board across many earlier test runs (it's what drove the 5ms safety cap
 //  above, consistently, every time) — so use only that, nothing else.
 // ================================================================
-static void waitTxReallyDone() {
+static uint32_t charTimeUs() {
   uint32_t baud = baudFromIndex(S0.baudIndex);
   uint32_t bitsPerChar = 1 + S0.dataBits + (S0.parity != 0 ? 1 : 0) + S0.stopBits;   // start+data+parity+stop
-  uint32_t charTimeUs  = (bitsPerChar * 1000000UL) / baud;
-  uint32_t waitUs = charTimeUs * 2;   // 2 character times of margin
+  return (bitsPerChar * 1000000UL) / baud;
+}
+
+static void waitTxReallyDone() {
+  uint32_t waitUs = charTimeUs() * 2;   // 2 character times of margin
   unsigned long t0 = micros();
   while (micros() - t0 < waitUs) { /* busy wait — see note above */ }
+}
+
+// Standard Modbus RTU silent-interval rule for delimiting a frame without a
+// length field: ~3.5 character times, except the spec pins this to a fixed
+// 1750us above 19200 baud (3.5 chars would otherwise get impractically
+// tight at high speed). Used by readUntilSilence() below for the
+// GW_CONVERTER pass-through modes, where we don't know the expected
+// response length in advance the way the points-based reads do. Not static:
+// modbus_converter.cpp's transparent sub-mode reuses this same gap on the
+// TCP side too, since a transparent client is expected to pace its bytes as
+// if writing straight onto the RTU wire at S0's baud rate.
+uint32_t interFrameSilenceUs() {
+  uint32_t baud = baudFromIndex(S0.baudIndex);
+  if (baud > 19200) return 1750UL;
+  return charTimeUs() * 4;   // ~3.5 chars, rounded up for margin against our own loop jitter
 }
 
 // ================================================================
@@ -203,7 +221,10 @@ static bool rtuReadRaw(uint8_t slaveId, uint8_t func, uint16_t addr, uint16_t qt
     // Don't let a slow/absent RTU slave starve the Modbus TCP server for the
     // whole responseTimeoutMs window — service any pending TCP client on
     // every spin of this wait so the two paths don't fight for the CPU.
+    // Both self-guard on gatewayMode, so calling both unconditionally is safe
+    // regardless of which mode is actually active.
     mbTcpServerLoop();
+    mbConverterLoop();
     // Same reasoning for the heartbeat LED — without this it stalls for the
     // whole wait and then jumps, which is what made the blink look unstable.
     boardLedService();
@@ -263,7 +284,10 @@ static bool rtuWriteSingle(uint8_t slaveId, uint8_t writeFunc, uint16_t addr, ui
     // Don't let a slow/absent RTU slave starve the Modbus TCP server for the
     // whole responseTimeoutMs window — service any pending TCP client on
     // every spin of this wait so the two paths don't fight for the CPU.
+    // Both self-guard on gatewayMode, so calling both unconditionally is safe
+    // regardless of which mode is actually active.
     mbTcpServerLoop();
+    mbConverterLoop();
     // Same reasoning for the heartbeat LED — without this it stalls for the
     // whole wait and then jumps, which is what made the blink look unstable.
     boardLedService();
@@ -306,7 +330,10 @@ static bool rtuWriteTwoRegs(uint8_t slaveId, uint16_t addr, uint16_t r0, uint16_
     // Don't let a slow/absent RTU slave starve the Modbus TCP server for the
     // whole responseTimeoutMs window — service any pending TCP client on
     // every spin of this wait so the two paths don't fight for the CPU.
+    // Both self-guard on gatewayMode, so calling both unconditionally is safe
+    // regardless of which mode is actually active.
     mbTcpServerLoop();
+    mbConverterLoop();
     // Same reasoning for the heartbeat LED — without this it stalls for the
     // whole wait and then jumps, which is what made the blink look unstable.
     boardLedService();
@@ -314,6 +341,131 @@ static bool rtuWriteTwoRegs(uint8_t slaveId, uint16_t addr, uint16_t r0, uint16_
   if (rxLen < 8) return false;
   uint16_t rxCrc = (uint16_t)rx[6] | ((uint16_t)rx[7] << 8);
   return (rx[0] == slaveId) && (rx[1] == 0x10) && (rxCrc == modbusCRC16(rx, 6));
+}
+
+// ================================================================
+//  Generic pass-through primitives (GW_CONVERTER mode) — unlike the
+//  points-based functions above, we don't know the expected response
+//  length in advance (the client can ask for anything), so frames are
+//  delimited by the RS485 silent-interval rule instead of a byte count.
+// ================================================================
+
+// Reads from s (RS485 or a TCP client, both are Stream) until either
+// nothing has arrived within overallTimeoutMs, or at least one byte has
+// arrived and then gapUs of silence follows (frame considered complete).
+// Interleaves TCP/converter/LED servicing + WDT feed during the wait, same
+// reasoning as the points-based wait loops above. Not static: shared with
+// modbus_converter.cpp's transparent sub-mode, which uses it on the TCP
+// client stream to find where one client "frame" ends.
+size_t readUntilSilence(Stream &s, uint8_t *buf, size_t maxLen,
+                         unsigned long overallTimeoutMs, uint32_t gapUs) {
+  size_t len = 0;
+  bool   gotAny = false;
+  unsigned long t0 = millis();
+  unsigned long lastByteUs = micros();
+
+  while (millis() - t0 < overallTimeoutMs) {
+    if (len < maxLen && s.available()) {
+      buf[len++] = (uint8_t)s.read();
+      lastByteUs = micros();
+      gotAny = true;
+      continue;   // drain a burst fast, don't waste time re-checking the gap mid-frame
+    }
+    if (gotAny && (micros() - lastByteUs) > gapUs) break;   // frame complete
+    if (len >= maxLen) break;
+    WDT_RESET_COUNTER();
+    mbTcpServerLoop();
+    mbConverterLoop();
+    boardLedService();
+  }
+  return len;
+}
+
+// Structured passthrough: we own the CRC (add on TX, verify on RX) and hand
+// the caller back just the PDU, matching how a normal RTU master frame is
+// built. A genuine slave exception is treated as a *successful* transaction
+// (the slave did answer) — the 2-byte exception PDU is returned as-is so
+// the caller (Modbus TCP converter) can relay it verbatim, which is the
+// standard, expected behavior of a protocol gateway.
+bool mbRtuRawTransaction(uint8_t slaveId, const uint8_t *reqPdu, size_t reqPduLen,
+                          uint8_t *respPdu, size_t &respPduLen, size_t maxRespPduLen) {
+  if (g_rtuBusy) { g_lastFailReason = MBRTU_BUS_BUSY; g_lastFailLen = 0; return false; }
+  RtuBusyGuard busyGuard;
+
+  if (reqPduLen == 0 || reqPduLen > 250) { g_lastFailReason = MBRTU_BAD_LEN; return false; }
+
+  uint8_t tx[256];
+  tx[0] = slaveId;
+  memcpy(&tx[1], reqPdu, reqPduLen);
+  uint16_t crc = modbusCRC16(tx, 1 + reqPduLen);
+  tx[1 + reqPduLen]     = (uint8_t)(crc & 0xFF);
+  tx[1 + reqPduLen + 1] = (uint8_t)(crc >> 8);
+  size_t txLen = 1 + reqPduLen + 2;
+
+  while (RS485.available()) (void)RS485.read();
+  RS485.noReceive();
+  RS485.beginTransmission();
+  RS485.write(tx, txLen);
+  waitTxReallyDone();
+  RS485.endTransmission();
+  RS485.receive();
+
+  uint8_t rx[256];
+  size_t rxLen = readUntilSilence(RS485, rx, sizeof(rx), S0.responseTimeoutMs, interFrameSilenceUs());
+  g_lastFailLen = (uint8_t)rxLen;
+
+  if (rxLen == 5 && (rx[1] & 0x80)) {
+    uint16_t excCrc = (uint16_t)rx[3] | ((uint16_t)rx[4] << 8);
+    if (rx[0] == slaveId && excCrc == modbusCRC16(rx, 3)) {
+      g_lastFailReason        = MBRTU_EXCEPTION;
+      g_lastFailExceptionCode = rx[2];
+      if (2 > maxRespPduLen) return false;
+      respPdu[0] = rx[1];
+      respPdu[1] = rx[2];
+      respPduLen = 2;
+      return true;   // relay the real exception verbatim, see comment above
+    }
+  }
+
+  if (rxLen < 4)          { g_lastFailReason = MBRTU_TIMEOUT;    return false; }   // slaveId+func+CRC16 minimum
+  if (rx[0] != slaveId)   { g_lastFailReason = MBRTU_BAD_HEADER; return false; }
+
+  uint16_t rxCrc = (uint16_t)rx[rxLen - 2] | ((uint16_t)rx[rxLen - 1] << 8);
+  if (rxCrc != modbusCRC16(rx, rxLen - 2)) { g_lastFailReason = MBRTU_BAD_CRC; return false; }
+
+  size_t pduLen = rxLen - 1 - 2;   // minus slaveId, minus CRC
+  if (pduLen == 0 || pduLen > maxRespPduLen) { g_lastFailReason = MBRTU_BAD_LEN; return false; }
+  memcpy(respPdu, &rx[1], pduLen);
+  respPduLen = pduLen;
+  return true;
+}
+
+// Fully raw: the caller already built slaveId+PDU+CRC themselves (a
+// transparent-mode TCP client's own bytes) — forwarded byte-for-byte, no
+// interpretation, no CRC check on either side. The response is likewise
+// handed back exactly as received; it's the TCP client's job to validate it.
+bool mbRtuRawBytesTransaction(const uint8_t *rawTx, size_t rawTxLen,
+                               uint8_t *rawRx, size_t &rawRxLen, size_t maxRawRxLen) {
+  if (g_rtuBusy) { g_lastFailReason = MBRTU_BUS_BUSY; g_lastFailLen = 0; return false; }
+  RtuBusyGuard busyGuard;
+
+  if (rawTxLen == 0) { g_lastFailReason = MBRTU_BAD_LEN; return false; }
+
+  while (RS485.available()) (void)RS485.read();
+  RS485.noReceive();
+  RS485.beginTransmission();
+  RS485.write(rawTx, rawTxLen);
+  waitTxReallyDone();
+  RS485.endTransmission();
+  RS485.receive();
+
+  size_t rxLen = readUntilSilence(RS485, rawRx, maxRawRxLen, S0.responseTimeoutMs, interFrameSilenceUs());
+  g_lastFailLen = (uint8_t)rxLen;
+  rawRxLen = rxLen;
+
+  if (rxLen == 0) { g_lastFailReason = MBRTU_TIMEOUT; return false; }
+  g_lastFailReason = MBRTU_OK;
+  return true;
 }
 
 // ================================================================

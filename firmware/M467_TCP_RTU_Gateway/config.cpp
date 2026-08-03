@@ -27,6 +27,9 @@ bool   mbTcpClientMode = false;
 String mbTcpClientHost = "";
 int    mbTcpClientPort = 502;
 
+uint8_t gatewayMode   = GW_CONCENTRATOR;
+uint8_t converterMode = CONV_STANDARD;
+
 bool      netDhcp = true;
 IPAddress netIp(192, 168, 1, 250);
 IPAddress netMask(255, 255, 255, 0);
@@ -176,6 +179,9 @@ void initDefaults() {
   mbTcpClientHost = "";
   mbTcpClientPort = 502;
 
+  gatewayMode   = GW_CONCENTRATOR;
+  converterMode = CONV_STANDARD;
+
   netDhcp    = true;
   netIp      = IPAddress(192, 168, 1, 250);
   netMask    = IPAddress(255, 255, 255, 0);
@@ -212,7 +218,7 @@ void initDefaults() {
 //  /SYSTEM.TXT
 //  line1 name, line2 password, line3 httpPort, line4 modbusTcpPort,
 //  line5 mbTcpClientMode(0/1), line6 mbTcpClientHost, line7 mbTcpClientPort,
-//  line8 httpEnable(0/1)
+//  line8 httpEnable(0/1), line9 gatewayMode(0/1), line10 converterMode(0/1)
 // ================================================================
 void loadSysConfig() {
   File f = SD.open(FILE_SYSTEM, FILE_READ);
@@ -228,12 +234,16 @@ void loadSysConfig() {
   String ch = rdLn(f); mbTcpClientHost = ch;   // may legitimately be empty
   String cp = rdLn(f); if (cp.length() > 0) mbTcpClientPort = cp.toInt();
   String he = rdLn(f); if (he.length() > 0) httpEnable = (he.toInt() == 1);
+  String gm = rdLn(f); if (gm.length() > 0) gatewayMode = (uint8_t)gm.toInt();
+  String cvm = rdLn(f); if (cvm.length() > 0) converterMode = (uint8_t)cvm.toInt();
   f.close();
 
   if (sysName.length() == 0) sysName = "M467-Modbus-Gateway";
   if (httpPort == 0) httpPort = 80;
   if (modbusTcpPort == 0) modbusTcpPort = 502;
   if (mbTcpClientPort == 0) mbTcpClientPort = 502;
+  if (gatewayMode > GW_CONVERTER) gatewayMode = GW_CONCENTRATOR;
+  if (converterMode > CONV_TRANSPARENT) converterMode = CONV_STANDARD;
   loginAuthBase64 = base64Encode(loginUsername + ":" + loginPassword);
 }
 
@@ -249,6 +259,8 @@ void saveSysConfig() {
   f.println(mbTcpClientHost);
   f.println(mbTcpClientPort);
   f.println(httpEnable ? 1 : 0);
+  f.println(gatewayMode);
+  f.println(converterMode);
   f.close();
   loginAuthBase64 = base64Encode(loginUsername + ":" + loginPassword);
 }

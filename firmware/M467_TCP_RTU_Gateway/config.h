@@ -43,6 +43,11 @@ static const uint8_t       MAX_LOGS          = 30;
 // System-page save triggers) would permanently lock you out with no way
 // back in short of a factory reset.
 static const unsigned long HTTP_GRACE_MS     = 60000UL;
+// Max simultaneous TCP connections we actively fair-schedule ourselves
+// (round-robin) rather than relying on the underlying library's scan order,
+// which always starts from socket 0 and can starve later connections.
+static const uint8_t       MAX_TRACKED_CLIENTS = 8;
+static const uint8_t       MAX_PENDING_WRITES   = 4;
 
 // ================================================================
 //  Enums
@@ -68,6 +73,19 @@ enum TcpRegType : uint8_t {
   TCP_DISCRETE = 1,   // FC02 (read-only)
   TCP_HOLDING  = 2,   // FC03/06/16
   TCP_INPUT    = 3,   // FC04 (read-only)
+};
+
+// Whole-device mode, mutually exclusive — both want the RS485 bus for very
+// different reasons (background cache refresh vs. live per-request access),
+// so only one runs at a time.
+enum GatewayMode : uint8_t {
+  GW_CONCENTRATOR = 0,   // existing 16/32-point cache + Modbus TCP server/client
+  GW_CONVERTER    = 1,   // live TCP<->RTU pass-through, no points, no capacity limit
+};
+// Only meaningful when gatewayMode == GW_CONVERTER.
+enum ConverterMode : uint8_t {
+  CONV_STANDARD    = 0,  // parse real Modbus TCP (MBAP), we add/verify the RTU CRC
+  CONV_TRANSPARENT = 1,  // raw byte tunnel — client already built the full RTU frame (incl. CRC)
 };
 
 // Number of consecutive Modbus registers a format occupies (coils/discretes are always 1 bit, N/A here)
@@ -146,6 +164,12 @@ extern bool   mbTcpClientMode;
 extern String mbTcpClientHost;
 extern int    mbTcpClientPort;
 
+// GatewayMode / ConverterMode — see enums above. Converter mode reuses
+// modbusTcpPort as its listen port (only one of the two modes is ever
+// actually listening, so no conflict).
+extern uint8_t gatewayMode;
+extern uint8_t converterMode;
+
 extern bool      netDhcp;
 extern IPAddress netIp, netMask, netGateway, netDns;
 
@@ -221,14 +245,42 @@ uint8_t mbRtuLastFailExceptionCode();
 String  mbRtuFailReasonText(uint8_t reason);
 bool    mbRtuIsBusy();   // true while an RTU transaction (read or write) is in flight
 
+// ---- modbus_rtu.cpp — generic pass-through primitives (GW_CONVERTER) ----
+// Structured passthrough: reqPdu/respPdu are Modbus PDUs (func+data, no
+// slave id, no CRC) — we prepend slaveId and add/verify CRC ourselves, same
+// convention as a normal RTU master. Returns false on any failure (check
+// mbRtuLastFailReason()); respPduLen is set on success.
+bool mbRtuRawTransaction(uint8_t slaveId, const uint8_t *reqPdu, size_t reqPduLen,
+                          uint8_t *respPdu, size_t &respPduLen, size_t maxRespPduLen);
+// Fully raw passthrough: rawTx is sent to RS485 byte-for-byte as given
+// (caller already built slaveId+PDU+CRC themselves); rawRx is whatever came
+// back, byte-for-byte, up to maxRawRxLen — no CRC check, no interpretation.
+// Frame boundaries (both directions) are detected via the standard Modbus
+// RTU silent-interval rule (~3.5 character times), not a length field.
+bool mbRtuRawBytesTransaction(const uint8_t *rawTx, size_t rawTxLen,
+                               uint8_t *rawRx, size_t &rawRxLen, size_t maxRawRxLen);
+// Shared with modbus_converter.cpp's transparent sub-mode: the same
+// silent-interval gap (RS485 side) is reused to delimit one client "frame"
+// on the TCP side, and the same generic Stream reader works for either.
+uint32_t interFrameSilenceUs();
+size_t   readUntilSilence(Stream &s, uint8_t *buf, size_t maxLen,
+                           unsigned long overallTimeoutMs, uint32_t gapUs);
+
 // ---- poll_engine.cpp ----
 void  pollEngineInit();
 void  pollEngineLoop();
 
 // ---- modbus_tcp_server.cpp ----
+// Both self-guard on gatewayMode/mbTcpClientMode and no-op if not applicable
+// — safe to call unconditionally from modbus_rtu.cpp's RTU wait loops.
 void  mbTcpServerInit();
 void  mbTcpServerLoop();
 uint16_t mbTcpActiveClientCount();
+
+// ---- modbus_converter.cpp (GW_CONVERTER mode) ----
+void  mbConverterInit();
+void  mbConverterLoop();      // self-guards on gatewayMode, safe to call unconditionally
+uint16_t mbConverterActiveClientCount();
 
 // ---- frontend.cpp ----
 void  frontendInit();

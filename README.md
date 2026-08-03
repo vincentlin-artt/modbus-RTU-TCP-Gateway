@@ -33,6 +33,44 @@ Manager / `modbus-mqtt-gateway` firmware), reusing the same board, Arduino
 core, and RTU send/receive timing, but trimmed to a single purpose and
 re-architected around a Modbus **TCP server** instead of an MQTT client.
 
+## Gateway mode: Concentrator vs. Converter (System page)
+
+Two mutually-exclusive whole-device modes — both share the same RS485 bus
+and the same `modbusTcpPort`, but only one is ever actually listening:
+
+- **Concentrator** (default, described above): 16/32-point polling cache,
+  reads served instantly from cache, writes forwarded live.
+- **Converter**: no points, no capacity limit — every TCP request is a live
+  Modbus RTU transaction, forwarded and answered in real time. Supports up
+  to `MAX_TRACKED_CLIENTS` (8) simultaneous TCP connections, each with its
+  own independent timeout. Two selectable sub-modes:
+  - **standard tcp↔rtu**: real Modbus TCP↔RTU protocol conversion — parses
+    the MBAP header + PDU, forwards the PDU over RS485 (we add/verify the
+    CRC), and translates an RTU-side failure into a Modbus exception code
+    (`0x0B` gateway-target-failed-to-respond for a timeout, `0x06`
+    gateway-busy if a rare same-instant bus collision occurs).
+  - **transparent**: raw byte tunnel — the TCP payload the client sends IS
+    the RTU frame content verbatim (client computes its own CRC). Since
+    there's no length field to know where one client's frame ends, frame
+    boundaries on *both* the TCP and RTU sides are detected via the
+    standard Modbus RTU silent-interval rule (~3.5 character times at the
+    configured RS485 baud rate) — a transparent client is expected to pace
+    its bytes as if writing straight onto the RTU wire.
+
+**Fairness**: `EthernetServer::available()` (the underlying lwIP-backed
+library call) always scans its internal client list from socket index 0 and
+returns the first one with pending data — under sustained traffic from a
+low-indexed client that client would win every call, potentially starving
+one accepted after it indefinitely. Both gateway modes work around this by
+tracking distinct clients themselves (by IP+port) and dispatching service
+turns in strict round-robin order (A1→B1→C1→A2→B2→...) over that list
+instead of trusting scan order; `available()` is only used for discovering
+new connections. In Converter mode this also means fairness for *turns at
+the shared RS485 bus* specifically, since (unlike the Concentrator's
+cache-based reads) every single request needs one — a client's turn is
+skipped (not queued) if the bus is already busy with someone else's
+transaction, and picked up again on its next turn.
+
 ## Board / point-count variants (`board_config.h`)
 
 Two independent compile-time switches, same pattern as the sibling Gateway
@@ -120,7 +158,7 @@ button 10s) to fall back to defaults.
 
 | File           | Contents |
 |----------------|----------|
-| `/SYSTEM.TXT`  | device name, login password, HTTP port, Modbus TCP port, TCP client mode + remote host/port, HTTP enable |
+| `/SYSTEM.TXT`  | device name, login password, HTTP port, Modbus TCP port, TCP client mode + remote host/port, HTTP enable, gateway mode, converter sub-mode |
 | `/NETWORK.TXT` | DHCP flag, static IP, mask, gateway, DNS |
 | `/SERIAL.TXT`  | RS485 baud index, data bits, parity, stop bits, pre/post delay (µs), response timeout (ms) |
 | `/POINTS.TXT`  | one line per point (see `config.cpp` for the exact CSV layout) |
