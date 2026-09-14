@@ -37,7 +37,6 @@
 //  Tunables
 // ================================================================
 static const uint8_t       MAX_POINTS        = POINT_COUNT;   // from board_config.h (16 or 32)
-static const uint8_t       MAX_LOGS          = 30;
 // If httpEnable is turned off, the web UI keeps working for this long after
 // boot regardless — otherwise disabling it (then rebooting, which any
 // System-page save triggers) would permanently lock you out with no way
@@ -177,16 +176,19 @@ extern IPAddress netIp, netMask, netGateway, netDns;
 extern uint8_t g_macAddr[6];
 
 // ================================================================
-//  Logger (ring buffer)
-// ================================================================
-extern String logs[MAX_LOGS];
-extern int    logIndex, logCount;
-
-// ================================================================
 //  Reboot control (used by factory reset / settings-changed reboot)
 // ================================================================
 extern volatile bool  g_rebootPending;
 extern unsigned long  g_rebootAt;
+
+// ================================================================
+//  Watchdog pre-reset diagnostic breadcrumb (fault_handler.cpp) — a bare
+//  pointer write, cheap enough to leave at the top of every major loop()
+//  stage. If the device ever hangs somewhere instead of crashing, WDT_
+//  IRQHandler() prints this right before the otherwise-unavoidable reset.
+// ================================================================
+extern volatile const char *g_wdtLastLoc;
+#define WDT_MARK(loc) (g_wdtLastLoc = (loc))
 
 // ================================================================
 //  Function prototypes
