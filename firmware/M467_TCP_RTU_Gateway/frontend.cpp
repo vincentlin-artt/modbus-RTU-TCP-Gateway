@@ -101,16 +101,26 @@ static void modiconToFuncAddr(uint32_t modicon, uint8_t &func, uint16_t &rawAddr
 // ================================================================
 //  HTTP response helpers
 // ================================================================
+// No Cache-Control means the browser is free to use its own heuristics to
+// decide whether/how long to cache these — which has bitten us before as
+// "the page shows old fields/JS even though the firmware was updated".
+// Every response this server sends is either state-dependent (config
+// reflecting current settings) or a one-shot auth challenge, so none of it
+// should ever be cached.
+#define NO_CACHE_HEADER "Cache-Control: no-store, no-cache, must-revalidate\r\n"
+
 static void sendHeader(EthernetClient &c) {
   c.println(F("HTTP/1.1 200 OK"));
   c.println(F("Connection: close"));
   c.println(F("Content-Type: text/html; charset=utf-8"));
+  c.print(F(NO_CACHE_HEADER));
   c.println();
 }
 static void sendRedirect(EthernetClient &c, const char *location) {
   c.println(F("HTTP/1.1 303 See Other"));
   c.print(F("Location: ")); c.println(location);
   c.println(F("Connection: close"));
+  c.print(F(NO_CACHE_HEADER));
   c.println();
 }
 static void send401(EthernetClient &c) {
@@ -118,6 +128,7 @@ static void send401(EthernetClient &c) {
   c.println(F("WWW-Authenticate: Basic realm=\"Gateway\""));
   c.println(F("Connection: close"));
   c.println(F("Content-Type: text/html; charset=utf-8"));
+  c.print(F(NO_CACHE_HEADER));
   c.println();
   c.println(F("<h1>Please refresh to login</h1>"));
 }
@@ -131,6 +142,7 @@ static void send401Logout(EthernetClient &c) {
   c.println(F("WWW-Authenticate: Basic realm=\"Gateway-logout\""));
   c.println(F("Connection: close"));
   c.println(F("Content-Type: text/html; charset=utf-8"));
+  c.print(F(NO_CACHE_HEADER));
   c.println();
   c.println(F("<h1>Logged out — close this tab, or enter any credentials to log back in.</h1>"));
 }
@@ -173,11 +185,10 @@ static void sendPageOpen(EthernetClient &c, const char *title, const char *activ
   c.print(F("<h2>")); c.print(sysName); c.println(F("</h2>"));
   c.print(F("<nav>"));
   navLink(c, "/",        "Dashboard", activePath);
-  navLink(c, "/points",  "Points",    activePath);
+  if (gatewayMode == GW_CONCENTRATOR) navLink(c, "/points", "Points", activePath);
   navLink(c, "/network", "Network",   activePath);
   navLink(c, "/serial",  "Serial",    activePath);
   navLink(c, "/system",  "System",    activePath);
-  navLink(c, "/log",     "Log",       activePath);
   c.println(F("<a href='/logout' class='logout'>Logout</a></nav>"));
 }
 static void sendPageClose(EthernetClient &c) {
@@ -215,9 +226,8 @@ static void sendDashboard(EthernetClient &c) {
     c.print(converterMode == CONV_TRANSPARENT ? F("transparent") : F("standard tcp&lt;&gt;rtu"));
     c.println(F(")</p>"));
     c.print(F("<p>Converter TCP clients connected: ")); c.print(mbConverterActiveClientCount()); c.println(F("</p>"));
-    c.println(F("<p>Points are not used in Converter mode — every TCP request is forwarded to the "
-                "RTU device live, no cache, no capacity limit. Switch back to Concentrator mode on "
-                "the System page to use the points table.</p>"));
+    c.println(F("<p>Points aren't used in Converter mode. Switch back to Concentrator on the "
+                "System page to use them.</p>"));
   }
   sendPageClose(c);
 }
@@ -226,13 +236,10 @@ static void sendDashboard(EthernetClient &c) {
 //  Points
 // ================================================================
 static void sendPointsPage(EthernetClient &c) {
+  // Unreachable when gatewayMode != GW_CONCENTRATOR — see the routing in
+  // frontendLoop(), which redirects /points to the dashboard instead.
   sendHeader(c);
   sendPageOpen(c, "Points", "/points");
-  if (gatewayMode != GW_CONCENTRATOR) {
-    c.println(F("<p>Gateway mode is currently Converter — points below are saved but not polled or "
-                "exposed on the Modbus TCP server. Switch to Concentrator mode on the System page to "
-                "use them.</p>"));
-  }
   c.println(F("<form method='POST' action='/points'><div style='overflow-x:auto'><table>"
               "<tr><th>#</th><th>En</th><th>Name</th><th>SlaveID</th><th>RTU Addr (Modicon)</th>"
               "<th>Format</th><th>Byte Order</th><th>Scale</th><th>Rate(ms)</th><th>Wr</th>"
@@ -455,14 +462,9 @@ static void sendSystemPage(EthernetClient &c) {
   c.println(F("</select><br>"));
   c.print(F("Modbus TCP port: <input type=number name='mbportc' value='")); c.print(modbusTcpPort); c.println(F("'><br>"));
   c.println(F("<p>Up to ")); c.print(MAX_TRACKED_CLIENTS);
-  c.println(F(" simultaneous TCP connections, serviced in round-robin order — every request needs a "
-              "live RS485 transaction, so fairness here means fairness for turns at the shared bus, "
-              "not just CPU time. Standard sub-mode parses real Modbus TCP (MBAP) and we add/verify "
-              "the RTU CRC ourselves. Transparent sub-mode is a raw tunnel — whatever bytes the client "
-              "sends ARE the RTU frame content (client computes its own CRC); frame boundaries on both "
-              "the TCP and RTU sides are detected the same way, via the standard Modbus RTU silent-"
-              "interval rule, since a transparent client is expected to pace its bytes as if writing "
-              "straight onto the RTU wire.</p>"));
+  c.println(F(" connections, round-robin serviced. Standard: real Modbus TCP (MBAP), CRC "
+              "added/verified for you. Transparent: raw byte tunnel — client's bytes ARE the "
+              "RTU frame (own CRC), framed by the RTU silent-interval gap on both sides.</p>"));
   c.println(F("</div>"));
 
   // Only meaningful (and only shown) when Gateway mode above is Concentrator.
@@ -479,11 +481,9 @@ static void sendSystemPage(EthernetClient &c) {
   c.print(F("Remote host: <input type=text name='mbhost' value='")); c.print(mbTcpClientHost); c.println(F("'><br>"));
   c.print(F("Remote port: <input type=number name='mbrport' value='")); c.print(mbTcpClientPort); c.println(F("'><br></div>"));
 
-  c.println(F("<p>Server mode accepts many simultaneous connections (tested well beyond 4), serviced "
-              "in round-robin order so one busy client can't starve the others. Client mode dials out "
-              "to one remote host:port instead — the Modbus protocol role doesn't change (this device "
-              "still answers requests), only who opens the TCP socket. Use Client mode when the remote "
-              "SCADA/master can't connect to this device directly (behind a firewall/NAT).</p>"));
+  c.println(F("<p>Server: many connections, round-robin serviced. Client: dials out to one remote "
+              "host:port instead (same protocol role, just who opens the socket) — use it when the "
+              "remote SCADA/master can't connect to this device directly (firewall/NAT).</p>"));
   c.println(F("</div>"));
 
   c.println(F("<button type=submit>Save &amp; Reboot</button></form>"));
@@ -528,23 +528,6 @@ static void handleSystemPost(const String &body) {
 }
 
 // ================================================================
-//  Log
-// ================================================================
-static void sendLogPage(EthernetClient &c) {
-  sendHeader(c);
-  sendPageOpen(c, "Log", "/log");
-  c.print(F("<p>Most recent first — holds the last ")); c.print(MAX_LOGS); c.println(F(" entries.</p>"));
-  c.println(F("<pre>"));
-  int start = (logCount < MAX_LOGS) ? 0 : logIndex;
-  for (int k = logCount - 1; k >= 0; k--) {
-    int idx = (start + k) % MAX_LOGS;
-    c.println(logs[idx]);
-  }
-  c.println(F("</pre>"));
-  sendPageClose(c);
-}
-
-// ================================================================
 //  frontendLoop – services exactly one ready client per call
 // ================================================================
 void frontendLoop() {
@@ -558,6 +541,7 @@ void frontendLoop() {
     return;
   }
 
+  WDT_MARK("fe:available");
   EthernetClient c = webServer->available();
   if (!c) return;
 
@@ -566,6 +550,7 @@ void frontendLoop() {
   int contentLen = 0;
   unsigned long t = millis() + 300;
 
+  WDT_MARK("fe:readHeader");
   while (c.connected() && millis() < t) {
     if (c.available()) {
       char ch = c.read();
@@ -583,6 +568,7 @@ void frontendLoop() {
 
   String body;
   if (isPost && contentLen > 0) {
+    WDT_MARK("fe:readBody");
     body.reserve(contentLen + 8);
     unsigned long tb = millis() + 5000;
     while ((int)body.length() < contentLen && millis() < tb) {
@@ -617,16 +603,20 @@ void frontendLoop() {
   }
   if (!auth) { send401(c); c.stop(); return; }
 
-  if (isPost && path == "/points")       { handlePointsPost(body);  sendRedirect(c, "/points");  }
-  else if (isPost && path == "/network") { handleNetworkPost(body); sendRedirect(c, "/network"); }
-  else if (isPost && path == "/serial")  { handleSerialPost(body);  sendRedirect(c, "/serial");  }
-  else if (isPost && path == "/system")  { handleSystemPost(body);  sendRedirect(c, "/system");  }
-  else if (path == "/points")  sendPointsPage(c);
-  else if (path == "/network") sendNetworkPage(c);
-  else if (path == "/serial")  sendSerialPage(c);
-  else if (path == "/system")  sendSystemPage(c);
-  else if (path == "/log")     sendLogPage(c);
-  else sendDashboard(c);
+  // Points aren't used in Converter mode at all — keep the page unreachable
+  // rather than just noting it's inactive, one less thing to render.
+  bool pointsRoute = (path == "/points") && (gatewayMode == GW_CONCENTRATOR);
 
+  if (isPost && pointsRoute)             { WDT_MARK("fe:postPoints");  handlePointsPost(body);  sendRedirect(c, "/points");  }
+  else if (isPost && path == "/network") { WDT_MARK("fe:postNetwork"); handleNetworkPost(body); sendRedirect(c, "/network"); }
+  else if (isPost && path == "/serial")  { WDT_MARK("fe:postSerial");  handleSerialPost(body);  sendRedirect(c, "/serial");  }
+  else if (isPost && path == "/system")  { WDT_MARK("fe:postSystem");  handleSystemPost(body);  sendRedirect(c, "/system");  }
+  else if (pointsRoute)        { WDT_MARK("fe:sendPoints");  sendPointsPage(c); }
+  else if (path == "/network") { WDT_MARK("fe:sendNetwork"); sendNetworkPage(c); }
+  else if (path == "/serial")  { WDT_MARK("fe:sendSerial");  sendSerialPage(c); }
+  else if (path == "/system")  { WDT_MARK("fe:sendSystem");  sendSystemPage(c); }
+  else                         { WDT_MARK("fe:sendDashboard"); sendDashboard(c); }
+
+  WDT_MARK("fe:stop");
   c.stop();
 }

@@ -134,6 +134,47 @@ works around this by polling the UART's real transmitter-empty hardware
 flag (`UART_WAIT_TX_EMPTY` on `UART_Desc[1].U`) before every
 `endTransmission()`, so DE never drops mid-byte.
 
+### Required patch: `EthernetClient::write()` can hang the whole device (watchdog reset)
+
+**This one lives outside this repo, in the installed board package, and must
+be reapplied any time `Arduino15/packages/nuvoton` is freshly installed or
+updated** — there's no way to work around it from sketch code (see below).
+
+`nvtEther/src/EthernetClient.cpp`'s `write(const uint8_t*, size_t)` retries
+in an unbounded loop whenever the TCP send window is full, waiting for the
+peer to ACK. That's normally milliseconds, but if a peer stops reading
+without closing the socket — e.g. a browser navigating to a new page before
+the previous one finished loading, or a stalled Modbus TCP master — it can
+spin forever, since the loop never calls `WDT_RESET_COUNTER()` and never
+gives up. Past the ~26s watchdog timeout, the whole device resets. This
+affects every response this firmware sends: web UI pages *and* Modbus TCP
+responses (`sendMbapResponse`/`sendConvMbapResponse`/the transparent
+converter's raw `c.write()`). `_tcp_client` is private to `EthernetClient`,
+so there's no way to add a bound from outside the class — it has to be
+patched in place.
+
+Patch `EthernetClient::write()`'s send loop (in
+`<Arduino15>/packages/nuvoton/hardware/nuvoton/13.3.3/libraries/nvtEther/src/EthernetClient.cpp`):
+add `#include "NuMicro.h"` near the top of the file, then in the `do { ... }
+while (bytes_sent != size)` loop, track a `millis()`-based stall timer
+(reset it whenever `tcp_write()` returns `ERR_OK`), call
+`WDT_RESET_COUNTER()` every iteration, and if the timer exceeds ~3s `return
+bytes_sent;` instead of looping again. Also change the existing early
+`return 0;` error paths to `return bytes_sent;` so a partial write is
+reported accurately.
+
+Deliberately **not** calling `tcp_abort()`/`tcp_close()` on that stall path:
+forcing the pcb closed from deep inside `write()` interacts with this port's
+callback-driven state machine in ways not fully verified on this hardware,
+and an earlier version of this patch that did call `tcp_abort()` made
+resets *more* frequent, not less — reverted. Giving up and returning
+without touching the pcb is the conservative choice: worst case a stuck
+socket lingers (bounded by `MAX_CLIENT`) instead of resetting the whole
+device, which is what this patch exists to prevent in the first place.
+
+Without this patch, don't rely on responses larger than one TCP segment
+reaching a peer that might stop reading mid-transfer.
+
 ## Building
 
 ```bash

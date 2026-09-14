@@ -38,9 +38,6 @@ IPAddress netDns(192, 168, 1, 1);
 
 uint8_t g_macAddr[6] = {0};
 
-String logs[MAX_LOGS];
-int    logIndex = 0, logCount = 0;
-
 volatile bool  g_rebootPending = false;
 unsigned long  g_rebootAt = 0;
 
@@ -71,13 +68,11 @@ String base64Encode(String s) {
   return out;
 }
 
+// No web-visible log page/buffer — see README for why. Serial is still the
+// place to watch this; a device on the bench always has it available and
+// it costs nothing extra.
 void addLog(String msg) {
-  char buf[16];
-  snprintf(buf, sizeof(buf), "[%lu] ", millis());
-  logs[logIndex] = String(buf) + msg;
-  logIndex = (logIndex + 1) % MAX_LOGS;
-  if (logCount < MAX_LOGS) logCount++;
-  Serial.println(msg);
+  Serial.print('['); Serial.print(millis()); Serial.print("] "); Serial.println(msg);
 }
 
 String ipToString(const IPAddress &ip) {

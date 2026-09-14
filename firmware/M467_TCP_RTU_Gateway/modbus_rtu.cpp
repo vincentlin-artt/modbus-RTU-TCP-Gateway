@@ -223,11 +223,16 @@ static bool rtuReadRaw(uint8_t slaveId, uint8_t func, uint16_t addr, uint16_t qt
     // every spin of this wait so the two paths don't fight for the CPU.
     // Both self-guard on gatewayMode, so calling both unconditionally is safe
     // regardless of which mode is actually active.
-    mbTcpServerLoop();
-    mbConverterLoop();
+    WDT_MARK("rtu:wait:tcpServer");  mbTcpServerLoop();
+    WDT_MARK("rtu:wait:converter");  mbConverterLoop();
+    // Without this, the web UI is completely unreachable for the whole
+    // duration of every RTU transaction — with a Modbus TCP master polling
+    // continuously, that's effectively "always", making the web UI look
+    // totally dead even though loop() itself isn't stuck.
+    WDT_MARK("rtu:wait:frontend");   frontendLoop();
     // Same reasoning for the heartbeat LED — without this it stalls for the
     // whole wait and then jumps, which is what made the blink look unstable.
-    boardLedService();
+    WDT_MARK("rtu:wait:led");        boardLedService();
   }
   g_lastFailLen = (uint8_t)rxLen;
 
@@ -286,11 +291,16 @@ static bool rtuWriteSingle(uint8_t slaveId, uint8_t writeFunc, uint16_t addr, ui
     // every spin of this wait so the two paths don't fight for the CPU.
     // Both self-guard on gatewayMode, so calling both unconditionally is safe
     // regardless of which mode is actually active.
-    mbTcpServerLoop();
-    mbConverterLoop();
+    WDT_MARK("rtu:wait:tcpServer");  mbTcpServerLoop();
+    WDT_MARK("rtu:wait:converter");  mbConverterLoop();
+    // Without this, the web UI is completely unreachable for the whole
+    // duration of every RTU transaction — with a Modbus TCP master polling
+    // continuously, that's effectively "always", making the web UI look
+    // totally dead even though loop() itself isn't stuck.
+    WDT_MARK("rtu:wait:frontend");   frontendLoop();
     // Same reasoning for the heartbeat LED — without this it stalls for the
     // whole wait and then jumps, which is what made the blink look unstable.
-    boardLedService();
+    WDT_MARK("rtu:wait:led");        boardLedService();
   }
   if (rxLen < 8) return false;
   uint16_t rxCrc = (uint16_t)rx[6] | ((uint16_t)rx[7] << 8);
@@ -332,11 +342,16 @@ static bool rtuWriteTwoRegs(uint8_t slaveId, uint16_t addr, uint16_t r0, uint16_
     // every spin of this wait so the two paths don't fight for the CPU.
     // Both self-guard on gatewayMode, so calling both unconditionally is safe
     // regardless of which mode is actually active.
-    mbTcpServerLoop();
-    mbConverterLoop();
+    WDT_MARK("rtu:wait:tcpServer");  mbTcpServerLoop();
+    WDT_MARK("rtu:wait:converter");  mbConverterLoop();
+    // Without this, the web UI is completely unreachable for the whole
+    // duration of every RTU transaction — with a Modbus TCP master polling
+    // continuously, that's effectively "always", making the web UI look
+    // totally dead even though loop() itself isn't stuck.
+    WDT_MARK("rtu:wait:frontend");   frontendLoop();
     // Same reasoning for the heartbeat LED — without this it stalls for the
     // whole wait and then jumps, which is what made the blink look unstable.
-    boardLedService();
+    WDT_MARK("rtu:wait:led");        boardLedService();
   }
   if (rxLen < 8) return false;
   uint16_t rxCrc = (uint16_t)rx[6] | ((uint16_t)rx[7] << 8);
@@ -374,9 +389,10 @@ size_t readUntilSilence(Stream &s, uint8_t *buf, size_t maxLen,
     if (gotAny && (micros() - lastByteUs) > gapUs) break;   // frame complete
     if (len >= maxLen) break;
     WDT_RESET_COUNTER();
-    mbTcpServerLoop();
-    mbConverterLoop();
-    boardLedService();
+    WDT_MARK("rtu:silence:tcpServer");  mbTcpServerLoop();
+    WDT_MARK("rtu:silence:converter");  mbConverterLoop();
+    WDT_MARK("rtu:silence:frontend");   frontendLoop();
+    WDT_MARK("rtu:silence:led");        boardLedService();
   }
   return len;
 }

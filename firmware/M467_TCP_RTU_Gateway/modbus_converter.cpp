@@ -98,6 +98,7 @@ static uint8_t rtuFailToMbException(uint8_t reason) {
 }
 
 static void serviceConverterStandard(EthernetClient &c) {
+  WDT_MARK("conv:std:readHdr");
   uint8_t hdr[7];
   size_t got = 0;
   unsigned long t0 = millis();
@@ -124,6 +125,7 @@ static void serviceConverterStandard(EthernetClient &c) {
 
   uint8_t respPdu[260];
   size_t  respLen = 0;
+  WDT_MARK("conv:std:rtuTransaction");
   if (!mbRtuRawTransaction(unitId, pdu, pduLen, respPdu, respLen, sizeof(respPdu))) {
     uint8_t exc[2] = { (uint8_t)(pdu[0] | 0x80), rtuFailToMbException(mbRtuLastFailReason()) };
     sendConvMbapResponse(c, hdr[0], hdr[1], unitId, exc, 2);
@@ -136,6 +138,7 @@ static void serviceConverterStandard(EthernetClient &c) {
 //  CONV_TRANSPARENT — raw byte tunnel
 // ================================================================
 static void serviceConverterTransparent(EthernetClient &c) {
+  WDT_MARK("conv:trans:readClient");
   uint8_t rawTx[256];
   size_t rawTxLen = readUntilSilence(c, rawTx, sizeof(rawTx),
                                       CONV_CLIENT_FRAME_TIMEOUT_MS, interFrameSilenceUs());
@@ -143,6 +146,7 @@ static void serviceConverterTransparent(EthernetClient &c) {
 
   uint8_t rawRx[256];
   size_t  rawRxLen = 0;
+  WDT_MARK("conv:trans:rtuTransaction");
   if (!mbRtuRawBytesTransaction(rawTx, rawTxLen, rawRx, rawRxLen, sizeof(rawRx))) {
     // No/garbled response from the RTU device — a raw tunnel has no framing
     // of its own to report that with, so send nothing back and let the
@@ -165,6 +169,7 @@ void mbConverterLoop() {
   // available() is used purely for discovering connections here — actual
   // dispatch below always goes through our own round-robin order, not scan
   // order. Safe to call even while the bus is busy (touches TCP only).
+  WDT_MARK("conv:discover");
   EthernetClient discovered = g_convServer->available();
   if (discovered) convTrack(discovered);
   convPrune();
@@ -183,8 +188,8 @@ void mbConverterLoop() {
     // not also pick this same client, or two loops would race reading the
     // same TCP stream.
     slot.busy = true;
-    if (converterMode == CONV_TRANSPARENT) serviceConverterTransparent(slot.client);
-    else                                    serviceConverterStandard(slot.client);
+    if (converterMode == CONV_TRANSPARENT) { WDT_MARK("conv:serviceTransparent"); serviceConverterTransparent(slot.client); }
+    else                                    { WDT_MARK("conv:serviceStandard");   serviceConverterStandard(slot.client); }
     slot.busy = false;
 
     g_convNext = (uint8_t)((i + 1) % MAX_TRACKED_CLIENTS);

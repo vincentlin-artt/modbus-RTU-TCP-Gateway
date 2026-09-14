@@ -44,6 +44,8 @@ static void watchdogService() {
     if ((int32_t)(millis() - g_wdtEnableAt) >= 0) {
       SYS_UnlockReg();
       WDT_Open(WDT_TIMEOUT_2POW18, 0, TRUE, FALSE);
+      WDT_EnableInt();
+      NVIC_EnableIRQ(WDT_IRQn);
       SYS_LockReg();
       g_wdtEnabled = true;
       addLog("[WDT] enabled");
@@ -145,18 +147,18 @@ void setup() {
 //  loop
 // ================================================================
 void loop() {
-  handleRstButton();
-  boardLedService();
-  watchdogService();
+  WDT_MARK("loop:rstButton");   handleRstButton();
+  WDT_MARK("loop:led");         boardLedService();
+  WDT_MARK("loop:wdtService");  watchdogService();
 
-  Ethernet.maintain();   // renew DHCP lease if needed
+  WDT_MARK("loop:maintain");    Ethernet.maintain();   // renew DHCP lease if needed
 
-  frontendLoop();
+  WDT_MARK("loop:frontend");    frontendLoop();
   // gatewayMode is mutually exclusive — both Loop functions self-guard on
   // it, so only the active mode's actually does anything each call.
-  mbTcpServerLoop();
-  pollEngineLoop();
-  mbConverterLoop();
+  WDT_MARK("loop:tcpServer");   mbTcpServerLoop();
+  WDT_MARK("loop:pollEngine");  pollEngineLoop();
+  WDT_MARK("loop:converter");   mbConverterLoop();
 
   if (g_rebootPending && millis() > g_rebootAt) {
     Serial.println(F("[SYS] Rebooting..."));
